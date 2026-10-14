@@ -7,10 +7,11 @@
 // capability and drives the REAL input pipeline: SendKey feeds
 // UserInputService.InputBegan/Ended and the control modules (so WASD walks the
 // character at full WalkSpeed with controls intact, no Humanoid hijack),
-// SendMouseButton feeds UIS and activates GUI buttons, SendMousePosition moves
+// SendMouseButton feeds UIS and activates GUI buttons, in the edit DataModel
+// too (StarterGui UI shown through ShowDevelopmentGui), SendMousePosition moves
 // the cursor (hover, MouseEnter, InputChanged), SendPointerAction scrolls
 // under a position, and SendTextInput types into the focused TextBox. Every method throws when the
-// input would hit interactive CoreGui.
+// input would hit interactive CoreGui ("position hits CoreGUI").
 //
 // Verified live on a play client: move and scroll reach game scripts with
 // the device simulator stopped. Under touch device emulation clicks arrive as
@@ -38,7 +39,7 @@ import * as RenderMonitor from "../RenderMonitor";
 
 const UserInputService = game.GetService("UserInputService");
 
-interface VirtualInput {
+export interface VirtualInput {
 	SendKey(isDown: boolean, keyCode: Enum.KeyCode): void;
 	SendMouseButton(position: Vector2, inputType: Enum.UserInputType, isDown: boolean): void;
 	SendMousePosition(position: Vector2): void;
@@ -61,6 +62,14 @@ function getVI(): VirtualInput | undefined {
 		return cachedVI;
 	}
 	return undefined;
+}
+
+// Input is silently dropped by the engine when the window isn't rendering
+// (e.g. minimized), so callers get that reason instead of a false success.
+export function readyVirtualInput(): VirtualInput | string {
+	const notRendering = RenderMonitor.notRenderingReason();
+	if (notRendering !== undefined) return notRendering;
+	return getVI() ?? "UserInputService:CreateVirtualInput() is not available in this context";
 }
 
 const MOUSE_TYPE_MAP: Record<string, Enum.UserInputType> = {
@@ -289,7 +298,7 @@ function simulateKeyboardInput(requestData: Record<string, unknown>) {
 	return result;
 }
 
-export = {
+export default {
 	simulateMouseInput,
 	simulateKeyboardInput,
 };

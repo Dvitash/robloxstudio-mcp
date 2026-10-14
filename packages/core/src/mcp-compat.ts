@@ -38,6 +38,16 @@ Tool descriptions explain selection. Input schemas explain arguments. This guide
 - The result saves an MP4 at video.path and returns one storyboard image of evenly spaced frames, with each frame's time in storyboard.times_ms; frames sets how many (0 omits the image). Re-sample part of a saved video with action=storyboard, input_path, start_ms, and end_ms instead of recording again.
 - During a playtest the recording follows the client viewport, like capture_screenshot. It reads the Studio window on the MCP host through FFmpeg: 8 or newer on Windows or WSL, which keeps recording behind other windows but not while Studio is minimized; 5.1 or newer with x11grab on Linux, which records the screen area, so Studio must stay uncovered and on-screen. Studio draws about 15 fps in the background, so bring Studio to the front for smooth playback.
 
+## UI previews
+
+Use preview_ui to check UI without a playtest. It needs the idle edit DataModel and shows the preview in the Studio viewport.
+
+- action=mount with target set to a story module (*.story ModuleScript), a ScreenGui, or a GuiObject. Stories render through the bundled story renderer with their current source (function, React/Roact, Vide, Fusion, Iris, and generic stories). ScreenGuis and GuiObjects are cloned; the originals are never changed, and scripts inside native UI do not run in edit mode. A neutral backdrop hides game UI and the 3D view unless backdrop=false. Mounting again replaces the current preview.
+- The mount result lists the story's controls with type, current value, and options or limits. Pass controls on mount or call action=set_controls to change them; names and value types are validated. Colors are "#RRGGBB", RGBA is { "color", "transparency" }, Choose/EnumList take an option, Object takes an instance path or "" to clear, and groups nest objects.
+- action=inspect lists the GuiObject tree below the preview root with paths, classes, effective visibility, screen rects, Text/Image, and button/TextBox flags. Use those paths as element for action=click (clicks the element centre) or action=type (focuses a TextBox, enters text, submit=true presses Return). click also accepts x/y read off the last preview_ui screenshot.
+- mount, set_controls, click, type, and screenshot return a screenshot after settle_seconds. Story state and controls persist between calls.
+- Call action=unmount when done. The preview also unmounts after 10 idle minutes, when a playtest starts, and when the plugin unloads; StarterGui.ShowDevelopmentGui is restored if preview_ui turned it on.
+
 ## Script changes
 
 - Read the relevant source with get_script_source before changing it.
@@ -82,7 +92,7 @@ capture_screenshot returns the 3D viewport for the edit view or, during a playte
 - Apply network conditions with set_network_profile. Roblox caps packet loss at 0.5 percent.
 - Inspect built-in device IDs with get_device_simulator_state, then apply one with set_device_simulator or compare several with capture_device_matrix.
 - Clear temporary network and device settings with reset_simulation_state after a scenario.
-- Capture the viewport with capture_screenshot before simulate_mouse_input so the pixel coordinates match. Keyboard input should target a live client when game input is under test.
+- Capture the viewport with capture_screenshot before simulate_mouse_input so the pixel coordinates match. simulate_mouse_input also clicks StarterGui UI in edit mode, but positions over CoreGui UI are rejected. Keyboard input should target a live client when game input is under test.
 - Mouse movement needs a client with a mouse; stop touch device emulation with set_device_simulator stopSimulation=true first.
 - To chain inputs in one call or target a GUI element by path, run execute_luau on that client and call UserInputService:CreateVirtualInput() (SendMouseButton, SendMousePosition, SendPointerAction, SendKey, SendTextInput). Convert a GuiObject's AbsolutePosition to viewport pixels by adding GuiService:GetGuiInset() unless its ScreenGui ignores the inset. Wrap the steps in pcall and release held keys and buttons in the same script; its VirtualInput is separate from the one simulate_mouse_input and simulate_keyboard_input use.
 - Do not lock the cursor (MouseBehavior.LockCenter, first-person camera) or call SendMouseDelta: Studio pins and hides the user's real OS cursor while it is locked.

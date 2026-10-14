@@ -44,6 +44,7 @@ const ROUTED_TOOLS = new Set([
   'multiplayer_playtest',
   'capture_screenshot',
   'capture_video',
+  'preview_ui',
   'capture_micro_profiler',
   'generate_model',
   'simulate_mouse_input',

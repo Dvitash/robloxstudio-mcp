@@ -306,7 +306,7 @@ describe('MCP v2 tool runtime', () => {
     const serialized = JSON.stringify(catalog);
     const inspectorCatalog = getReadOnlyTools().map(publicToolDefinition);
 
-    expect(catalog).toHaveLength(51);
+    expect(catalog).toHaveLength(52);
     // 51,000 admits operation_id on every recoverable Studio write and
     // expected_revision(s) on script writes (about 1,600 characters);
     // 52,300 adds capture_video (about 1,200 characters);
@@ -315,9 +315,10 @@ describe('MCP v2 tool runtime', () => {
     // response-budget cap to get_request_status (about 80 characters);
     // 53,257 adds playtest ready_timeout_s and notes that start's timeout
     // aliases it (257 characters); 53,552 adds capture_screenshot frames,
-    // interval_ms and grid (295 characters).
-    expect(serialized.length).toBeLessThanOrEqual(53_552);
-    expect(catalog.filter((tool) => tool.outputSchema)).toHaveLength(50);
+    // interval_ms and grid (295 characters); 55,500 adds preview_ui (about
+    // 1,900 characters with the edit-mode simulate_mouse_input wording).
+    expect(serialized.length).toBeLessThanOrEqual(55_500);
+    expect(catalog.filter((tool) => tool.outputSchema)).toHaveLength(51);
     expect(catalog.every((tool) => tool.description.length <= 120)).toBe(true);
     expect(inspectorCatalog).toHaveLength(26);
     // 22,300 admits the sequence options on the read-only capture_screenshot.
@@ -429,6 +430,13 @@ describe('MCP v2 tool runtime', () => {
       idempotentHint: true,
       openWorldHint: false,
     });
+    expect(byName.get('preview_ui')?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    });
+    expect(names.has('preview_ui') && !inspectorCatalog.some((tool) => tool.name === 'preview_ui')).toBe(true);
   });
 
   test('keeps selection, argument, and behavior metadata in their contract layers', () => {
