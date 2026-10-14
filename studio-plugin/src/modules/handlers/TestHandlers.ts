@@ -2,6 +2,7 @@ import { HttpService, Players, RunService } from "@rbxts/services";
 import StopPlayMonitor from "../StopPlayMonitor";
 import PluginSession from "../PluginSession";
 import PeerRole from "../PeerRole";
+import UiPreviewHandlers from "./UiPreviewHandlers";
 
 // Communication injects the server broker's client list; importing ClientBroker
 // here would pull its whole handler graph into this module.
@@ -166,6 +167,7 @@ function startPlaytest(requestData: Record<string, unknown>) {
 		return { error: "A test is already running" };
 	}
 
+	UiPreviewHandlers.endForPlaytest();
 	testRunning = true;
 	const preparedTest = PluginSession.prepareSoloTest();
 	const testId = HttpService.GenerateGUID(false);
@@ -288,6 +290,7 @@ function multiplayerTestStart(requestData: Record<string, unknown>) {
 
 	const testArgs = requestData.testArgs !== undefined ? requestData.testArgs : {};
 	const testId = HttpService.GenerateGUID(false);
+	UiPreviewHandlers.endForPlaytest();
 
 	multiplayerState = {
 		phase: "starting",

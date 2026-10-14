@@ -304,6 +304,7 @@ describe('Tool schema compatibility', () => {
       preview_asset: 'previewAsset',
       capture_screenshot: 'captureScreenshot',
       capture_video: 'captureVideo',
+      preview_ui: 'previewUi',
       simulate_mouse_input: 'simulateMouseInput',
       simulate_keyboard_input: 'simulateKeyboardInput',
       get_memory_breakdown: 'getMemoryBreakdown',
