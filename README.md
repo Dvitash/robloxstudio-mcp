@@ -32,7 +32,7 @@ screenshots, memory reports, and profiler captures from each peer.
 - Use `selection` to inspect or update Studio selection and frame a part or model before capturing the viewport.
 - Capture the viewport with `capture_screenshot`, then send mouse or keyboard input. See [Configuration](docs/configuration.md#host-window-capture).
 - Record the viewport to MP4 with `capture_video` to review cutscenes, tweens, or animations. Each recording returns a storyboard image of evenly spaced frames. Requires Windows or WSL, plus FFmpeg 8+; see [Video recording](docs/configuration.md#video-recording).
-- Check UI without a playtest using `preview_ui`: mount a story module (`*.story`), ScreenGui, or GuiObject in the edit viewport, change story controls, click buttons, type into TextBoxes, inspect the GUI tree, and get a screenshot after each step. The preview keeps its state until you unmount it. See [Previewing UI](docs/building-from-source.md#previewing-ui-with-preview_ui).
+- Check UI without a playtest using `preview_ui`: mount a story module (`*.story`), ScreenGui, or GuiObject in the edit viewport, change story controls, click buttons, type into TextBoxes, inspect the GUI tree, and get a screenshot after each step. The preview keeps its state until you unmount it, and story previews hot-reload when you edit the story or modules it requires. See [Previewing UI](docs/building-from-source.md#previewing-ui-with-preview_ui).
 
 ### Inspect Creator Store assets
 
