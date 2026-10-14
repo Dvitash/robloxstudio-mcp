@@ -16,6 +16,7 @@
     "build:plugin:artifact": "npm run compile:plugin && npm run build:ui-renderer && node scripts/build-plugin.mjs --build-only && node scripts/build-source-archive.mjs",
     "build:plugin:inspector": "npm run compile:plugin && node scripts/build-plugin.mjs --variant inspector",
     "build:ui-renderer": "node scripts/build-ui-renderer.mjs",
+    "build:preview-tool": "npm run build:plugin:artifact && node scripts/build-preview-bundle.mjs",
     "build:plugins": "npm run compile:plugin && node scripts/build-plugin.mjs --variant inspector && npm run build:ui-renderer && node scripts/build-plugin.mjs && node scripts/build-source-archive.mjs",
     "build:all": "npm run build && npm run build:plugins",
     "clean": "npm exec --workspaces -- npx rimraf dist",

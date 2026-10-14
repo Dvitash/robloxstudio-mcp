@@ -89,6 +89,32 @@ UI state persist between calls:
   starts, and when the plugin unloads. `preview_ui` refuses active playtests and
   never touches a separately installed renderer plugin.
 
+### `preview_ui` as an omp tool on a released server
+
+The same preview core also ships as a standalone omp custom tool that needs no
+plugin rebuild: it rides any released `@chrrxs/robloxstudio-mcp` server.
+
+```bash
+npm run build:preview-tool                         # plugin artifact + bundle into .local/preview-ui-tool
+node scripts/build-preview-bundle.mjs --install    # writes ~/.omp/agent/tools/preview_ui
+```
+
+`scripts/build-preview-bundle.mjs` (with `rojo` and `lune` on PATH) reshapes
+the built plugin into `preview-ui.rbxm`: the core
+(`studio-plugin/src/modules/preview/UiPreview.ts`), the modules it imports,
+the roblox-ts runtime and the story renderer, without the plugin bootstrap.
+The tool (`omp-tool/preview_ui/index.ts`) is an MCP client of the server's
+streamable HTTP endpoint (`PREVIEW_UI_MCP_URL`, else port `ROBLOX_STUDIO_PORT`
+or 58741; token from `ROBLOX_STUDIO_AUTH_TOKEN` or
+`~/.robloxstudio-mcp/auth-token`). It imports the bundle with `import_rbxm`
+into a non-archivable `ServerStorage.__OmpPreviewUi` folder (again when the
+bundle version changes), calls the core through `execute_luau` (the MCP
+plugin's VM keeps the module and its preview state between calls), and
+captures with `capture_screenshot`. It has the same parameters and behaviour
+as the MCP tool. Playtest start and idle expiry are detected by the core's own
+monitor; plugin unload uses the MCP plugin's `Unloading` signal. The bundle
+stays loaded after `unmount` for reuse and is never saved.
+
 The corresponding-source archive rebuilds without a Git checkout. Its copy of
 `vendor/ui-renderer/UPSTREAM_COMMIT` records the source pin.
 
