@@ -44,7 +44,11 @@ it, and the plugin is built with it.
    viewport fails or comes back black. On Linux the broker grabs the Studio X11 window with
    python3 ctypes (libX11, libXcomposite; `xprop` from x11-utils), taking DISPLAY and XAUTHORITY
    from the Studio process, and crops it to the viewport the plugin's markers outline.
-   `ROBLOX_STUDIO_HOST_CAPTURE=0` turns host capture off.
+   `ROBLOX_STUDIO_HOST_CAPTURE=0` turns host capture off. Captures go to the host window first when
+   the broker knows the Studio's process (from its managed-instance registry). A Studio it did not
+   launch (e.g. one Carbon started while another broker was primary) is grabbed when Studio's own
+   fast path is unavailable, before CaptureService; the window that shows the markers then names
+   the process, so later captures go host-first.
 3. `feat(core): screenshot sequences, wait_until, ready playtests and pending results`
    (`tools/index.ts`, `tools/definitions.ts`, `mcp-compat.ts`, `mcp-runtime.ts`):
    - `capture_screenshot` works in edit mode and in solo and multiplayer playtests. A multiplayer
@@ -61,6 +65,15 @@ it, and the plugin is built with it.
    Tests: `host-capture-linux`, `contact-sheet`, `runtime-wait` and the playtest cases in `smoke`.
 4. Merge of `feat/preview-ui` (and `ddb00f1`): `preview_ui`, which needs the `vendor/ui-renderer`
    submodule (`git submodule update --init`) and pnpm for `build:plugin:artifact`.
+5. `feat(core): ROBLOX_STUDIO_CLAIM_PRIMARY takes the port from a session that holds it`
+   (`server.ts`, `http-server.ts`). Every omp session runs this server, and the first to bind
+   :58741 is primary. A session's 5 s promotion check often binds the port in the gap of a unit
+   restart, which left the unit a proxy and the session's old build serving Studio. A claiming
+   broker sends `POST /primary/yield` (auth token) to the holder. The holder stops listening,
+   drops its Studio connections and becomes a proxy, and the claimant binds the port. A claimant
+   never yields. A holder without the route (a build before this patch) keeps the port; the
+   claimant logs `Could not claim port` and proxies, promoting when the port frees.
+   Tests: `primary-claim`.
 
 ### Agent usage
 
@@ -98,10 +111,15 @@ If the rebase changes the version or anything under `studio-plugin/`, rebuild th
 
 | User | Source | What it runs |
 |---|---|---|
-| `spark-studio-mcp.service` (systemd user unit, the broker on :58741) | `~/Projects/tern-worktree/spark/spark-studio-mcp.service`, linked into `~/.config/systemd/user/` | `node packages/robloxstudio-mcp/dist/index.js` as the main process, stdin held open by a pipe from `sleep infinity` |
+| `spark-studio-mcp.service` (systemd user unit, the broker on :58741) | `~/Projects/tern-worktree/spark/spark-studio-mcp.service`, linked into `~/.config/systemd/user/` | `node packages/robloxstudio-mcp/dist/index.js` as the main process, stdin held open by a pipe from `sleep infinity`, with `ROBLOX_STUDIO_CLAIM_PRIMARY=1` |
 | omp MCP server `robloxstudio` (one per omp session; a proxy unless it holds :58741) | `~/.omp/agent/mcp.json`, chezmoi template `dot_omp/private_agent/mcp.json.tmpl` | `node <checkout>/packages/robloxstudio-mcp/dist/index.js` |
 | Plugin sync and stale-primary heal | `spark-worktree-desktop` (`MCP_PACKAGE_DIR`, default this checkout; repo `~/Projects/spark-worktree-desktop`, installed by copy to `~/.local/bin`; `spark-carbon-worktree` loads it) | copies `studio-plugin/MCPPlugin.rbxmx` into each prefix and compares the primary's `/health` version with the root `package.json` |
 
 Running processes keep the code they loaded. After a rebuild, restart the broker unit while no
-launch is in flight (`systemctl --user restart spark-studio-mcp`). omp sessions load the new build
-when they next start.
+launch is in flight (`systemctl --user restart spark-studio-mcp`), then check that
+`ss -ltnp 'sport = :58741'` shows the pid from `systemctl --user show -p MainPID spark-studio-mcp`.
+If an omp session's server holds the port instead, the unit is a proxy and its journal
+(`journalctl --user -u spark-studio-mcp`) says `Could not claim port 58741`. That session runs a
+build older than patch 5, which cannot yield: kill that server process (the pid from `ss`); the
+unit promotes within 50 ms.
+omp sessions load the new build when they next start.
