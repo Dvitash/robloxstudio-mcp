@@ -40,6 +40,7 @@ export interface RobloxStudioHttpApp extends Express {
   closeMcpHandler(): Promise<void> | undefined;
   attachStudioTransport(server: http.Server): void;
   cleanup(): Promise<void>;
+  setPrimaryYieldHandler(handler: (() => void) | undefined): void;
 }
 
 interface StreamableHttpConfig {
@@ -530,7 +531,7 @@ export function createHttpServer(tools: RobloxStudioTools, bridge: BridgeService
     const path = requestPath.toLowerCase().replace(/\/+$/, '');
     return path === '/mcp' || path.startsWith('/mcp/') ||
       path === '/proxy' || path === '/topology' || path === '/request-status' || path === '/unregister-instance-id' ||
-      path === '/create-multiplayer-group' || path === '/remove-multiplayer-group';
+      path === '/create-multiplayer-group' || path === '/remove-multiplayer-group' || path === '/primary/yield';
   };
   app.use((req, res, next) => {
     if (!authToken || !authRequired(req.path)) {
@@ -579,6 +580,20 @@ export function createHttpServer(tools: RobloxStudioTools, bridge: BridgeService
   };
   app.use(handleBodySizeError);
 
+  // A broker started with ROBLOX_STUDIO_CLAIM_PRIMARY asks the session that
+  // holds the port to hand it over (claimPrimaryPort). Without a handler this
+  // broker must stay primary.
+  let primaryYieldHandler: (() => void) | undefined;
+  app.post('/primary/yield', (_req, res) => {
+    const handler = primaryYieldHandler;
+    if (!handler) {
+      res.status(409).json({ error: 'primary_required', message: 'This broker must stay primary.' });
+      return;
+    }
+    primaryYieldHandler = undefined;
+    res.on('finish', handler);
+    res.status(202).json({ yielding: true });
+  });
 
   app.get('/health', (req, res) => {
     const peers = bridge.getPublicPeers().map(toPassivePeer);
@@ -1066,6 +1081,9 @@ export function createHttpServer(tools: RobloxStudioTools, bridge: BridgeService
     await mcpHandler?.close();
     await tools.dispose();
   };
+  app.setPrimaryYieldHandler = (handler) => {
+    primaryYieldHandler = handler;
+  };
 
   return app;
 }
@@ -1083,15 +1101,9 @@ export async function listenWithRetry(
   for (let i = 0; i < maxAttempts; i++) {
     const port = startPort + i;
     try {
-      const server = await bindPort(app, host, port);
-      return { server, port };
+      return { server: await bindPort(app, host, port), port };
     } catch (error) {
-      if (
-        error !== null &&
-        typeof error === 'object' &&
-        'code' in error &&
-        error.code === 'EADDRINUSE'
-      ) {
+      if (isAddressInUse(error)) {
         console.error(`Port ${port} in use, trying next...`);
         continue;
       }
@@ -1099,6 +1111,53 @@ export async function listenWithRetry(
     }
   }
   throw new Error(`All ports ${startPort}-${startPort + maxAttempts - 1} are in use. Stop some MCP server instances and retry.`);
+}
+
+const PRIMARY_CLAIM_ROUNDS = 3;
+const PRIMARY_CLAIM_WAIT_MS = 5_000;
+const PRIMARY_CLAIM_RETRY_MS = 10;
+
+function isAddressInUse(error: unknown): boolean {
+  return error !== null && typeof error === 'object' && 'code' in error && error.code === 'EADDRINUSE';
+}
+
+/**
+ * Bind `port`, asking the broker that holds it to yield first (POST
+ * /primary/yield), then rebinding as soon as it lets go. Builds without the
+ * route, and brokers that must stay primary, keep the port; the claim fails.
+ */
+export async function claimPrimaryPort(
+  app: express.Express,
+  host: string,
+  port: number,
+  authToken?: string,
+): Promise<{ server: http.Server; port: number }> {
+  for (let round = 0; round < PRIMARY_CLAIM_ROUNDS; round++) {
+    try {
+      return { server: await bindPort(app, host, port), port };
+    } catch (error) {
+      if (!isAddressInUse(error)) throw error;
+    }
+    const answer = await fetch(`http://127.0.0.1:${port}/primary/yield`, {
+      method: 'POST',
+      headers: authToken ? { 'X-MCP-Auth': authToken } : {},
+      signal: AbortSignal.timeout(PRIMARY_CLAIM_WAIT_MS),
+    }).catch(() => undefined);
+    if (answer?.status !== 202) {
+      throw new Error(`Port ${port} is held by a broker that did not yield (${answer ? `HTTP ${answer.status}` : 'no answer'}).`);
+    }
+    console.error(`The broker on port ${port} is yielding; claiming the primary role`);
+    const deadline = Date.now() + PRIMARY_CLAIM_WAIT_MS;
+    while (Date.now() < deadline) {
+      try {
+        return { server: await bindPort(app, host, port), port };
+      } catch (error) {
+        if (!isAddressInUse(error)) throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, PRIMARY_CLAIM_RETRY_MS));
+    }
+  }
+  throw new Error(`Port ${port} stayed in use after ${PRIMARY_CLAIM_ROUNDS} hand-over requests.`);
 }
 
 function bindPort(app: express.Express, host: string, port: number): Promise<http.Server> {
