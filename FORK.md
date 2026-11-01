@@ -111,7 +111,7 @@ If the rebase changes the version or anything under `studio-plugin/`, rebuild th
 
 | User | Source | What it runs |
 |---|---|---|
-| `spark-studio-mcp.service` (systemd user unit, the broker on :58741) | `~/Projects/tern-worktree/spark/spark-studio-mcp.service`, linked into `~/.config/systemd/user/` | `node packages/robloxstudio-mcp/dist/index.js` as the main process, stdin held open by a pipe from `sleep infinity`, with `ROBLOX_STUDIO_CLAIM_PRIMARY=1` |
+| `spark-studio-mcp.service` (systemd user unit, the broker on :58741) | `~/Projects/tern-worktree/spark/spark-studio-mcp.service`, linked into `~/.config/systemd/user/` | `node packages/robloxstudio-mcp/dist/index.js` as the main process, stdin held open by a pipe from a `tail --pid` that ends with it, with `ROBLOX_STUDIO_CLAIM_PRIMARY=1`. Studios it launches run in its cgroup; `KillMode=process` keeps them alive when it restarts |
 | omp MCP server `robloxstudio` (one per omp session; a proxy unless it holds :58741) | `~/.omp/agent/mcp.json`, chezmoi template `dot_omp/private_agent/mcp.json.tmpl` | `node <checkout>/packages/robloxstudio-mcp/dist/index.js` |
 | Plugin sync and stale-primary heal | `spark-worktree-desktop` (`MCP_PACKAGE_DIR`, default this checkout; repo `~/Projects/spark-worktree-desktop`, installed by copy to `~/.local/bin`; `spark-carbon-worktree` loads it) | copies `studio-plugin/MCPPlugin.rbxmx` into each prefix and compares the primary's `/health` version with the root `package.json` |
 
@@ -122,4 +122,12 @@ If an omp session's server holds the port instead, the unit is a proxy and its j
 (`journalctl --user -u spark-studio-mcp`) says `Could not claim port 58741`. That session runs a
 build older than patch 5, which cannot yield: kill that server process (the pid from `ss`); the
 unit promotes within 50 ms.
-omp sessions load the new build when they next start.
+omp sessions load the new build when they next start. Tool calls run in the calling session's own
+server, which forwards only Studio requests to the primary, so a session started before a rebuild
+keeps the old tool behaviour until it restarts.
+
+Never stop these processes with `pkill -f` or `pgrep -f` patterns that contain the dist path
+(`packages/robloxstudio-mcp/dist/index.js`). The unit and every omp session's server match it. One
+such `pkill` (2026-11-01) killed all of them at once: in-flight calls failed in every session,
+omp restarted its servers, and the unit's exit took down the Studios in its cgroup (before
+`KillMode=process`). Kill one exact pid, taken from `ss` or `systemctl --user show -p MainPID`.
