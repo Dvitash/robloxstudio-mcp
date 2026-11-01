@@ -2,7 +2,8 @@
 // a story module rendered through the bundled story renderer, or a clone of a
 // native ScreenGui / GuiObject. The preview lives in a non-archivable host
 // ScreenGui under StarterGui: CreateVirtualInput clicks reach StarterGui UI in
-// edit mode but are rejected over CoreGui ("position hits CoreGUI"), and an
+// edit mode but are rejected over CoreGui ("position hits CoreGUI"), so element
+// clicks pick a point of the element clear of Roblox UI (the top bar), and an
 // Archivable=false host is neither saved nor copied into playtest DataModels.
 // Story control state lives in the mounted renderer and persists between
 // actions until unmount, playtest start, plugin unload, or IDLE_TIMEOUT.
@@ -24,6 +25,7 @@ import Utils from "../Utils";
 import { readyVirtualInput, VirtualInput } from "../handlers/InputHandlers";
 
 const StarterGui = game.GetService("StarterGui");
+const CoreGui = game.GetService("CoreGui");
 const GuiService = game.GetService("GuiService");
 // EditModeActive is false while a playtest owns the viewport; it is missing from the typings.
 const StudioTestService = game.GetService("StudioTestService") as StudioTestService & { EditModeActive: boolean };
@@ -45,6 +47,11 @@ const INTERACTIVE_ACTIONS: Record<string, true> = { set_controls: true, click: t
 const CLICK_HOLD = 0.05;
 const INSPECT_LIMIT = 300;
 const TEXT_LIMIT = 120;
+// Fractions across an element's width and height tried for a click, centre first: the click moves
+// off-centre when Roblox UI or another preview object covers the centre.
+const CLICK_FRACTIONS = [0.5, 0.3, 0.7, 0.15, 0.85];
+// Story frames kept when a nested Vide error is unwrapped.
+const STORY_FRAME_LIMIT = 8;
 const NATIVE_SCRIPT_NOTE =
 	"Scripts and LocalScripts inside native UI do not run in edit mode; the preview shows the UI's static state. Use a story module to preview behaviour.";
 const NATIVE_RELOAD_NOTE = "Native UI previews are static clones and do not hot-reload; mount again to see changes to the source.";
@@ -552,6 +559,31 @@ function truncate(text: string): string {
 	return text.size() > ERROR_LIMIT ? `${text.sub(1, ERROR_LIMIT)}...` : text;
 }
 
+// Vide wraps an effect failure in "effect error:" / "effect error stacktrace" and "error while running
+// root():" lines, once per nesting level, with its own frames in between, so the story's Luau error sits
+// deep inside and truncation can cut it. Lead with that error and the story's own frames; the full text follows.
+function storyError(text: string): string {
+	if (text.find("effect error", 1, true)[0] === undefined) return text;
+	let message: string | undefined;
+	const frames: string[] = [];
+	for (const [raw] of text.gmatch("[^\n]+")) {
+		const line = tostring(raw).gsub("^%s+", "")[0].gsub("%s+$", "")[0];
+		if (line === "" || line === "source update stacktrace:") continue;
+		if (line.match("effect error:?$")[0] !== undefined || line.match("effect error stacktrace$")[0] !== undefined) continue;
+		if (line.match("error while running [%w_]+%(%):?$")[0] !== undefined) continue;
+		// A frame is "<chunk>:<line>", optionally followed by " function <name>"; an error message has ":<line>: ".
+		if (line.match(":%d+$")[0] !== undefined || line.match(":%d+ function ")[0] !== undefined) {
+			const internal = [".vide.", "_vide@", "UIRenderer", "PreviewUiBundle"].some((part) => line.find(part, 1, true)[0] !== undefined);
+			if (!internal && !frames.includes(line) && frames.size() < STORY_FRAME_LIMIT) frames.push(line);
+			continue;
+		}
+		message ??= line;
+	}
+	if (message === undefined) return text;
+	const stack = frames.size() > 0 ? `\nStory stack:\n  ${frames.join("\n  ")}` : "";
+	return `${message}${stack}\n\nFull Vide error:\n${text}`;
+}
+
 // Reload activity since the previous action, or undefined when nothing happened.
 function takeReloadReport(preview: Preview, story: RendererHandle): Record<string, unknown> | undefined {
 	const status = story.GetReload();
@@ -563,7 +595,7 @@ function takeReloadReport(preview: Preview, story: RendererHandle): Record<strin
 		preview.reportedGeneration = status.Generation;
 		notable = true;
 	}
-	if (status.State === "failed") report.error = truncate(status.Error ?? "unknown error");
+	if (status.State === "failed") report.error = truncate(storyError(status.Error ?? "unknown error"));
 	if (status.State === "loading") {
 		report.note = `The story was still reloading after ${RELOAD_WAIT}s; this result may show the previous load.`;
 	}
@@ -581,7 +613,7 @@ function takeReloadReport(preview: Preview, story: RendererHandle): Record<strin
 	if (errors.size() > preview.reportedErrors) {
 		const fresh: string[] = [];
 		for (let i = math.max(preview.reportedErrors, errors.size() - MAX_REPORTED_ERRORS); i < errors.size(); i++) {
-			fresh.push(truncate(errors[i]));
+			fresh.push(truncate(storyError(errors[i])));
 		}
 		report.storyErrors = fresh;
 		const omitted = errors.size() - preview.reportedErrors - fresh.size();
@@ -739,7 +771,7 @@ function mountPreview(data: Record<string, unknown>): Record<string, unknown> {
 	});
 	if (!ok) {
 		const cleanupFailure = finish(preview);
-		fail(`UI preview mount failed: ${tostring(err)}${cleanupFailure !== undefined ? `; cleanup failed: ${cleanupFailure}` : ""}`);
+		fail(`UI preview mount failed: ${storyError(tostring(err))}${cleanupFailure !== undefined ? `; cleanup failed: ${cleanupFailure}` : ""}`);
 	}
 	startMonitor();
 	const result = summary(preview);
@@ -775,6 +807,26 @@ function hitAt(preview: Preview, position: Vector2): Record<string, unknown> | u
 	return top === undefined ? undefined : { top: relativePath(root, top) };
 }
 
+// The topmost CoreGui GuiObject (the top bar or other Roblox UI) that takes input at a screen point;
+// CreateVirtualInput rejects an edit-mode click there ("position hits CoreGUI").
+function coreGuiAt(position: Vector2): GuiObject | undefined {
+	const [inset] = GuiService.GetGuiInset();
+	const guiPosition = position.sub(inset);
+	const [ok, hits] = pcall(() => CoreGui.GetGuiObjectsAtPosition(guiPosition.X, guiPosition.Y));
+	if (!ok) return undefined;
+	return hits.find((hit) => hit.Active || hit.IsA("GuiButton") || hit.BackgroundTransparency < 1);
+}
+
+// Whether the topmost preview GuiObject at a screen point is `element` or inside it.
+function reaches(root: Instance, element: Instance, position: Vector2): boolean {
+	const [inset] = GuiService.GetGuiInset();
+	const guiPosition = position.sub(inset);
+	const [ok, hits] = pcall(() => StarterGui.GetGuiObjectsAtPosition(guiPosition.X, guiPosition.Y));
+	if (!ok) return false;
+	const top = hits.find((hit) => hit === root || hit.IsDescendantOf(root));
+	return top !== undefined && (top === element || top.IsDescendantOf(element));
+}
+
 function elementCenter(element: Instance, root: Instance): Vector2 {
 	if (!element.IsA("GuiObject")) fail(`${relativePath(root, element)} is a ${element.ClassName}, not a GuiObject.`);
 	if (!shown(element)) fail(`${relativePath(root, element)} is not visible (it or an ancestor has Visible=false).`);
@@ -788,27 +840,72 @@ function elementCenter(element: Instance, root: Instance): Vector2 {
 	return center;
 }
 
+// Screen points to click `element` at, best first: its centre, else the nearest grid point where the
+// element itself is topmost in the preview and no Roblox UI takes the input. Fails when Roblox UI covers
+// every visible point of it; falls back to the centre when only other preview objects cover it.
+function clickPoints(element: Instance, root: Instance): Vector2[] {
+	const center = elementCenter(element, root);
+	const [x, y, w, h] = screenRect(element as GuiObject);
+	const size = game.Workspace.CurrentCamera?.ViewportSize ?? Vector2.zero;
+	const points: Vector2[] = [];
+	for (const fy of CLICK_FRACTIONS) {
+		for (const fx of CLICK_FRACTIONS) {
+			const point = new Vector2(math.floor(x + w * fx), math.floor(y + h * fy));
+			if (point.X < 0 || point.Y < 0 || point.X >= size.X || point.Y >= size.Y) continue;
+			if (coreGuiAt(point) === undefined && reaches(root, element, point)) points.push(point);
+		}
+	}
+	if (points.size() > 0) return points;
+	const cover = coreGuiAt(center);
+	if (cover !== undefined) {
+		const [inset] = GuiService.GetGuiInset();
+		fail(
+			`${relativePath(root, element)} is covered by Roblox UI (${cover.GetFullName()}) wherever it shows, and edit-mode clicks there are rejected. ` +
+				`Lay the story out below the top bar (GuiService:GetGuiInset() is ${inset.Y} px) or click x and y elsewhere.`,
+		);
+	}
+	return [center];
+}
+
 function clickPreview(preview: Preview, data: Record<string, unknown>): Record<string, unknown> {
 	const root = previewRoot(preview);
-	let position: Vector2;
+	let points: Vector2[];
 	let element: Instance | undefined;
 	if (data.element !== undefined) {
 		element = resolveElement(root, data.element);
-		position = elementCenter(element, root);
+		points = clickPoints(element, root);
 	} else if (typeIs(data.x, "number") && typeIs(data.y, "number")) {
-		position = new Vector2(math.round(data.x), math.round(data.y));
+		const point = new Vector2(math.round(data.x), math.round(data.y));
+		const cover = coreGuiAt(point);
+		if (cover !== undefined) {
+			fail(
+				`(${point.X}, ${point.Y}) is over Roblox UI (${cover.GetFullName()}); edit-mode clicks there are rejected. ` +
+					"Click by element instead: it picks a point of the element clear of Roblox UI.",
+			);
+		}
+		points = [point];
 	} else {
 		fail("click needs element (a path relative to the preview root) or x and y.");
 	}
 	const vi = readyVirtualInput();
 	if (typeIs(vi, "string")) fail(vi);
-	const hit = hitAt(preview, position);
-	const [ok, err] = pcall(() => sendClick(vi, position));
-	if (!ok) fail(`Click failed: ${tostring(err)}`);
+	let position = points[0];
+	let hit: Record<string, unknown> | undefined;
+	let clickErr: unknown;
+	// The engine may still reject a point as "hits CoreGUI" (Roblox UI the check above missed): try the next one.
+	for (const point of points) {
+		position = point;
+		hit = hitAt(preview, point);
+		const [ok, err] = pcall(() => sendClick(vi, point));
+		clickErr = ok ? undefined : err;
+		if (ok || tostring(err).find("CoreGUI", 1, true)[0] === undefined) break;
+	}
+	if (clickErr !== undefined) fail(`Click failed: ${tostring(clickErr)}`);
 	const result = summary(preview);
 	result.clicked = { x: position.X, y: position.Y };
 	if (element !== undefined) {
 		result.element = { path: relativePath(root, element), className: element.ClassName, isButton: element.IsA("GuiButton") };
+		if (position !== elementCenter(element, root)) result.clickNote = "Clicked off-centre: Roblox UI or another preview object covers the element's centre.";
 	}
 	result.hit = hit ?? "no preview GuiObject at that point";
 	return result;
@@ -819,7 +916,7 @@ function typePreview(preview: Preview, data: Record<string, unknown>): Record<st
 	const root = previewRoot(preview);
 	const element = resolveElement(root, data.element);
 	if (!element.IsA("TextBox")) fail(`${relativePath(root, element)} is a ${element.ClassName}, not a TextBox.`);
-	const position = elementCenter(element, root);
+	const position = clickPoints(element, root)[0];
 	const vi = readyVirtualInput();
 	if (typeIs(vi, "string")) fail(vi);
 	const [ok, err] = pcall(() => {

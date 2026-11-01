@@ -77,8 +77,12 @@ UI state persist between calls:
   (clicks over CoreGui UI are rejected by Studio). If
   `StarterGui.ShowDevelopmentGui` is off, the preview turns it on and restores
   it on unmount.
-- `click` targets an element's centre (or `x`/`y` read off the last
-  `preview_ui` screenshot) through `UserInputService:CreateVirtualInput()`.
+- `click` targets an element's centre, or the nearest point of it that no
+  CoreGui UI (the top bar) or other preview object covers (`clickNote` says
+  so), or `x`/`y` read off the last `preview_ui` screenshot, through
+  `UserInputService:CreateVirtualInput()`. A failed story mount or reload
+  leads with the story's Luau error and its own stack frames, unwrapped from
+  Vide's nested `effect error` text, followed by the full error.
   `type` focuses a TextBox, sends the text, and presses Return when `submit`
   is true.
 - `mount`, `set_controls`, `click`, `type`, and `screenshot` wait
