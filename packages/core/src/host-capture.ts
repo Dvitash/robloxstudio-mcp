@@ -135,7 +135,12 @@ export function findViewportRect(
     }
   }
   if (maxX < 0) {
-    return { error: 'no viewport markers were visible in the Studio window capture' };
+    // The grab reads the window's own pixels, so other windows on top do not
+    // matter; a Studio tab in front of the place viewport does.
+    return {
+      error: 'no viewport markers were visible in the Studio window capture (if a script or plugin tab such as ' +
+        "UI Labs is in front of the place's viewport tab, select the place tab and retry)",
+    };
   }
 
   const rect = { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
