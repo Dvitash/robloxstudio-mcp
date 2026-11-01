@@ -39,6 +39,36 @@ it, and the plugin is built with it.
    running observation, so a snapshot taken while the launch was gated is too old to override it.
    Regression tests: the three gated-launch tests in
    `packages/core/src/__tests__/studio-wine-host.test.ts` ("Wine host managed Studio lifecycle").
+2. `feat(core): capture the Studio window on Linux and compose contact sheets`
+   (`host-capture-linux.ts`, `contact-sheet.ts`). Under Wine, Studio's own capture of the play
+   viewport fails or comes back black. On Linux the broker grabs the Studio X11 window with
+   python3 ctypes (libX11, libXcomposite; `xprop` from x11-utils), taking DISPLAY and XAUTHORITY
+   from the Studio process, and crops it to the viewport the plugin's markers outline.
+   `ROBLOX_STUDIO_HOST_CAPTURE=0` turns host capture off.
+3. `feat(core): screenshot sequences, wait_until, ready playtests and pending results`
+   (`tools/index.ts`, `tools/definitions.ts`, `mcp-compat.ts`, `mcp-runtime.ts`):
+   - `capture_screenshot` works in edit mode and in solo and multiplayer playtests. A multiplayer
+     `<id>-server` captures the server window. New arguments: `frames` (up to 16),
+     `interval_ms`, `grid` (one numbered contact sheet) and `save_to`.
+   - `eval_server_runtime` and `eval_client_runtime` take `wait_until` (plus `code`, `timeout_s`
+     and `poll_ms`). They poll the condition in the runtime VM and return `satisfied`.
+   - `solo_playtest start` defaults to play mode. Playtest starts return once every runtime peer
+     answers an eval (`ready_timeout_s`, default 90 s) and list `targets[].instance_id`.
+   - Calls longer than `ROBLOX_STUDIO_MCP_RESPONSE_BUDGET_MS` (default 25000) return
+     `state: "pending"` with a `requestId`. A repeated call joins the running one, and
+     `get_request_status` collects the result. omp's MCP client times out at 30 s by default, so
+     the chezmoi `mcp.json` template sets `"timeout": 120000` for this server.
+   Tests: `host-capture-linux`, `contact-sheet`, `runtime-wait` and the playtest cases in `smoke`.
+4. Merge of `feat/preview-ui` (and `ddb00f1`): `preview_ui`, which needs the `vendor/ui-renderer`
+   submodule (`git submodule update --init`) and pnpm for `build:plugin:artifact`.
+
+### Agent usage
+
+- Take screenshots with `capture_screenshot`, not scrot, xwd or ffmpeg. Use `frames` with `grid: true`
+  for motion, and `save_to` for files. Read mouse coordinates only from single-frame captures.
+- Wait for game state with `wait_until`, not sleeps.
+- Pass a `targets[].instance_id` from a playtest start as `instance_id`.
+- A `state: "pending"` result means "call `get_request_status`"; never repeat the call.
 
 ## Build
 
