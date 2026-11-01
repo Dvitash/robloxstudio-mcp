@@ -1225,7 +1225,8 @@ export class RobloxStudioTools {
   private hostWindowCapture: HostWindowCaptureFn = captureStudioWindow;
   private hostViewportRects = new Map<string, HostViewportRectCacheEntry>();
   private viewportCaptureQueues = new Map<string, Promise<void>>();
-  private hostCaptureProcessIds = new Map<string, { processId?: number; cachedAt: number }>();
+  // Registry lookups expire; a process found through its window does not.
+  private hostCaptureProcessIds = new Map<string, { processId?: number; cachedAt: number; discovered?: boolean }>();
   private toolJobs = new Map<string, ToolJob>();
   // Per Studio process: viewport pixels per pixel of the last preview_ui screenshot.
   private previewUiScales = new Map<string, { x: number; y: number }>();
@@ -5684,6 +5685,15 @@ export class RobloxStudioTools {
       (response.error?.includes('/api/capture-studio') ?? false);
     const studioFastPathUnavailable = studioFastPathMissing ? response.unavailable ?? response.error : undefined;
 
+    if (studioFastPathMissing && hostFirstError === undefined && isHostCapturePreferred()) {
+      // A Studio this broker did not launch has no known process, so it skips
+      // the host-first grab above. Grab its window before falling back to
+      // CaptureService, which hands Wine play clients black frames; every
+      // Studio display is searched and the viewport markers pick the window.
+      const host = await this._captureViewportFromHostWindow(instanceId, targetRole);
+      if (host.success) return { success: true, response: host.responses[0], hostNote: '', studioFastPathUnavailable };
+      hostFirstError = host.error;
+    }
     if (studioFastPathMissing) {
       if (targetRole.startsWith('client-')) {
         // Play mode. The running game VM can trigger CaptureScreenshot but can't
@@ -5883,7 +5893,7 @@ export class RobloxStudioTools {
   private async _hostCaptureProcessId(instanceId: string): Promise<number | undefined> {
     if (process.platform !== 'linux') return undefined;
     const cached = this.hostCaptureProcessIds.get(instanceId);
-    if (cached && Date.now() - cached.cachedAt < HOST_VIEWPORT_RECT_TTL_MS) return cached.processId;
+    if (cached && (cached.discovered || Date.now() - cached.cachedAt < HOST_VIEWPORT_RECT_TTL_MS)) return cached.processId;
     const controller = this.bridge.getMultiplayerGroups()
       .find((group) => group.instanceIds.includes(instanceId))?.controllerInstanceId;
     let processId: number | undefined;
@@ -6081,6 +6091,12 @@ export class RobloxStudioTools {
       viewportHeight,
       cachedAt: Date.now(),
     });
+    // A Studio missing from the registry is named by the window that showed
+    // its markers, so later captures go host-first.
+    const windowProcessId = markerGrab.capture.identity?.processId;
+    if (processId === undefined && windowProcessId !== undefined) {
+      this.hostCaptureProcessIds.set(instanceId, { processId: windowProcessId, cachedAt: Date.now(), discovered: true });
+    }
     return {
       success: true,
       response: this._hostResponseFromCrop(cleanGrab.capture.rgba, cleanGrab.capture.width, cleanGrab.capture.height, located.rect, viewportWidth, viewportHeight),

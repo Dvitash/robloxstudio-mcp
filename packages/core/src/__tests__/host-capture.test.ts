@@ -377,6 +377,31 @@ describe('capture_screenshot host window fallback', () => {
     }
   });
 
+  test('on Linux grabs the window of a Studio missing from the registry, then goes host-first', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    jest.spyOn(StudioInstanceManager.prototype, 'get').mockResolvedValue(undefined);
+    const markerState = { shown: false };
+    const hintedProcessIds: Array<number | undefined> = [];
+    const hostCapture: HostWindowCaptureFn = async (_titleHint, _identity, options) => {
+      hintedProcessIds.push(options?.processId);
+      return { ok: true, capture: { width: 400, height: 200, title: 't', identity: windowIdentity, rgba: studioWindow(400, 200, viewport, markerState.shown) } };
+    };
+    const { tools, request } = makeTools(hostCapture, studioThatReturnsBlackPlayFrames(markerState));
+    const capture = async () => {
+      const [summary] = (await tools.captureScreenshot('instance:test', 'png')).content;
+      if (!('text' in summary) || typeof summary.text !== 'string') throw new Error('Expected a text summary');
+      return JSON.parse(summary.text);
+    };
+
+    expect(await capture()).toMatchObject({ source: 'host-window', width: 300, height: 120, studioFastPathUnavailable: 'StudioCaptureService cannot capture this DataModel right now' });
+    expect(request.mock.calls.map(([endpoint]) => endpoint)).not.toContain('/api/capture-begin');
+
+    request.mockClear();
+    expect((await capture()).source).toBe('host-window');
+    expect(request.mock.calls.map(([endpoint]) => endpoint)).not.toContain('/api/capture-studio');
+    expect(hintedProcessIds.at(-1)).toBe(windowIdentity.processId);
+  });
+
   test('replaces a successful but black StudioCaptureService PNG with the host viewport', async () => {
     const markerState = { shown: false };
     const hostCapture: HostWindowCaptureFn = async () => ({
