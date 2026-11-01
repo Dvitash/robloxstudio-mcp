@@ -294,7 +294,8 @@ describe('MCP v2 tool runtime', () => {
     const inspectorCatalog = getReadOnlyTools().map(publicToolDefinition);
 
     expect(catalog).toHaveLength(50);
-    expect(serialized.length).toBeLessThanOrEqual(49_000);
+    // wait_until, playtest readiness and screenshot sequences add ~1.2k.
+    expect(serialized.length).toBeLessThanOrEqual(50_000);
     expect(catalog.filter((tool) => tool.outputSchema)).toHaveLength(49);
     expect(catalog.every((tool) => tool.description.length <= 120)).toBe(true);
     expect(inspectorCatalog).toHaveLength(25);

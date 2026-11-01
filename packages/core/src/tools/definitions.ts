@@ -411,32 +411,55 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'eval_server_runtime',
     category: 'write',
-    description: 'Use to run Luau in the live server VM with its require cache.',
+    description: 'Use to run Luau in the live server VM with its require cache, or to wait until a server condition holds.',
     inputSchema: {
       type: 'object',
       properties: {
         code: {
           type: 'string',
-          description: 'Luau code; return a value to include it in the result.'
+          description: 'Luau to run first; return a value to see it.'
+        },
+        wait_until: {
+          type: 'string',
+          description: 'Luau condition polled until truthy.'
+        },
+        timeout_s: {
+          type: 'number',
+          description: 'Wait limit in seconds; default 20.'
+        },
+        poll_ms: {
+          type: 'integer',
+          description: 'Poll interval in ms; default 250.'
         },
         instance_id: {
           type: 'string',
           description: 'Studio process ID when ambiguous.'
         }
-      },
-      required: ['code']
+      }
     }
   },
   {
     name: 'eval_client_runtime',
     category: 'write',
-    description: 'Use to run Luau in a live client VM with its require cache.',
+    description: 'Use to run Luau in a live client VM with its require cache, or to wait until a client condition holds.',
     inputSchema: {
       type: 'object',
       properties: {
         code: {
           type: 'string',
-          description: 'Luau code; return a value to include it in the result.'
+          description: 'Luau to run first; return a value to see it.'
+        },
+        wait_until: {
+          type: 'string',
+          description: 'Luau condition polled until truthy.'
+        },
+        timeout_s: {
+          type: 'number',
+          description: 'Wait limit in seconds; default 20.'
+        },
+        poll_ms: {
+          type: 'integer',
+          description: 'Poll interval in ms; default 250.'
         },
         target: {
           type: 'string',
@@ -446,8 +469,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           type: 'string',
           description: 'Studio process ID when ambiguous.'
         }
-      },
-      required: ['code']
+      }
     }
   },
 
@@ -619,16 +641,20 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         action: {
           type: 'string',
           enum: ['start', 'stop', 'status'],
-          description: 'Lifecycle action to run.'
+          description: 'Lifecycle action.'
         },
         mode: {
           type: 'string',
           enum: ['play', 'run'],
-          description: 'Required for action="start".'
+          description: 'start mode; default play.'
+        },
+        ready_timeout_s: {
+          type: 'number',
+          description: 'Seconds start waits for peers to answer eval; default 90.'
         },
         timeout: {
           type: 'number',
-          description: 'Wait in seconds; start defaults to 60 and stop to 15.'
+          description: 'Wait in seconds; stop defaults to 15.'
         },
         instance_id: {
           type: 'string',
@@ -939,6 +965,10 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         value: {
           description: 'JSON value returned by end to the edit process.'
         },
+        ready_timeout_s: {
+          type: 'number',
+          description: 'Seconds start waits for peers to answer eval; default 90.'
+        },
         timeout: {
           type: 'number',
           description: 'Wait in seconds; defaults to 30.'
@@ -1243,7 +1273,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'get_request_status',
     category: 'read',
-    description: 'Use to check, await, or recover a retained Studio operation.',
+    description: 'Use to check, await, or recover a retained Studio operation or a pending tool call.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1251,13 +1281,13 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           type: 'string',
           minLength: 1,
           maxLength: MAX_OPERATION_ID_LENGTH,
-          description: 'Caller operation ID or request ID from a server error.'
+          description: 'Operation ID, request ID from an error, or a pending requestId.'
         },
         wait_ms: {
           type: 'integer',
           minimum: 0,
           maximum: MAX_OPERATION_WAIT_MS,
-          description: 'Max ms to await settlement; never cancels.'
+          description: 'Max ms to await settlement, capped at 25000; never cancels.'
         }
       },
       required: ['request_id']
@@ -1529,7 +1559,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'capture_screenshot',
     category: 'read',
-    description: 'Use to capture the Studio viewport or map input coordinates.',
+    description: 'Use to capture the Studio viewport, a frame sequence or contact sheet, or map input coordinates.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1542,9 +1572,25 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           type: 'number',
           description: 'JPEG quality 1-100; defaults to 92. Ignored for png.'
         },
+        frames: {
+          type: 'integer',
+          description: 'Frames to capture, 1-16; default 1.'
+        },
+        interval_ms: {
+          type: 'integer',
+          description: 'Gap between frames in ms; default 500.'
+        },
+        grid: {
+          type: 'boolean',
+          description: 'Return the frames as one numbered contact sheet.'
+        },
+        save_to: {
+          type: 'string',
+          description: 'Also write the image(s) to this path.'
+        },
         instance_id: {
           type: 'string',
-          description: 'Studio process ID when ambiguous.'
+          description: 'Studio process ID; <id>-server or <id>-client-N picks a peer.'
         }
       },
     }

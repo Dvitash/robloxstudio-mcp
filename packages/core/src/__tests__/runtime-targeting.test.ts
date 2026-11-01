@@ -18,6 +18,7 @@ describe('explicit runtime viewport targeting', () => {
   beforeEach(() => {
     // Synthetic topology only; never inspect the user's managed Studio state.
     jest.spyOn(StudioInstanceManager.prototype, 'pendingLaunches').mockResolvedValue([]);
+    jest.spyOn(StudioInstanceManager.prototype, 'get').mockResolvedValue(undefined);
   });
   afterEach(async () => {
     if (lastTools) await (lastTools as unknown as { managedConnectionAssociations: Promise<void> }).managedConnectionAssociations;
@@ -56,10 +57,16 @@ describe('explicit runtime viewport targeting', () => {
     expect(request.mock.calls[0][2]).toBe(`peer:instance:player${index}:client-${index}`);
   });
 
-  test.each([undefined, 'instance:controller', 'instance:server-server'])('preserves first-client fallback for %s', async (id) => {
+  test.each([undefined, 'instance:controller'])('preserves first-client fallback for %s', async (id) => {
     const { tools, request } = setup();
     await tools.captureScreenshot(id, 'png');
     expect(request.mock.calls[0][2]).toBe('peer:instance:player1:client-1');
+  });
+
+  test('captures the multiplayer server view for its role-suffixed ID', async () => {
+    const { tools, request } = setup();
+    await tools.captureScreenshot('instance:server-server', 'png');
+    expect(request.mock.calls[0][2]).toBe('peer:instance:server:server');
   });
 
   test('rejects an unknown or stale client alias instead of selecting another client', async () => {

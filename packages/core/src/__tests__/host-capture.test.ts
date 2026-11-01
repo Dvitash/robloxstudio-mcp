@@ -237,7 +237,7 @@ describe('capture_screenshot host window fallback', () => {
     return { tools, request };
   }
 
-  test.each(['linux', 'disabled'] as const)('does not prepare markers or scaling when host capture is %s', async (mode) => {
+  test.each(['freebsd', 'disabled'] as const)('does not prepare markers or scaling when host capture is %s', async (mode) => {
     if (mode === 'disabled') process.env.ROBLOX_STUDIO_HOST_CAPTURE = '0';
     else Object.defineProperty(process, 'platform', { value: mode });
     const hostCapture = jest.fn(async (): Promise<HostCaptureResult> => ({ ok: false, error: 'must not run' }));
@@ -330,7 +330,7 @@ describe('capture_screenshot host window fallback', () => {
   });
 
   test('preserves a capture-begin error and fast-path reason when host capture is unsupported', async () => {
-    Object.defineProperty(process, 'platform', { value: 'linux' });
+    Object.defineProperty(process, 'platform', { value: 'freebsd' });
     const hostCapture = jest.fn(async (): Promise<HostCaptureResult> => ({ ok: false, error: 'must not run' }));
     const { tools, request } = makeTools(hostCapture, async (endpoint) => {
       if (endpoint === '/api/capture-studio') return { unavailable: 'Client capture unavailable' };
@@ -340,7 +340,7 @@ describe('capture_screenshot host window fallback', () => {
     const result = await tools.captureScreenshot('instance:test', 'png');
     const text = JSON.parse((result.content[0] as { text: string }).text);
     expect(text.error).toContain('Screenshot callback timed out');
-    expect(text.error).toContain(hostCaptureUnsupportedReason('linux'));
+    expect(text.error).toContain(hostCaptureUnsupportedReason('freebsd'));
     expect(text.studioFastPathUnavailable).toBe('Client capture unavailable');
     expect(hostCapture).not.toHaveBeenCalled();
     expect(request.mock.calls.some(([endpoint]) => endpoint === '/api/capture-markers')).toBe(false);
@@ -623,7 +623,7 @@ describe('capture_screenshot host window fallback', () => {
     const second = await tools.captureScreenshot('instance:test', 'png');
     expect(JSON.parse((second.content[0] as { text: string }).text).source).toBe('host-window');
     expect(hostCapture.mock.calls).toEqual([
-      ['TestPlace'], ['TestPlace', windowIdentity], ['TestPlace', windowIdentity],
+      ['TestPlace', undefined, { accept: expect.any(Function) }], ['TestPlace', windowIdentity, {}], ['TestPlace', windowIdentity, {}],
     ]);
     expect(request.mock.calls.filter(([endpoint]) => endpoint === '/api/capture-markers')
       .map(([, data]) => (data as { action: string }).action)).toEqual(['prepare', 'query', 'finish']);
@@ -652,7 +652,7 @@ describe('capture_screenshot host window fallback', () => {
     expect(text.source).toBe('CaptureService');
     expect(text.message).toContain('window identity changed');
     expect(text.message).toContain('may be blank');
-    expect(hostCapture.mock.calls[mismatchAt - 1]).toEqual(['TestPlace', windowIdentity]);
+    expect(hostCapture.mock.calls[mismatchAt - 1]).toEqual(['TestPlace', windowIdentity, {}]);
     expect(markerState.shown).toBe(false);
     const image = result.content.find((item) => 'data' in item);
     if (!image || !('data' in image) || typeof image.data !== 'string') throw new Error('Expected original blank frame');
@@ -662,7 +662,7 @@ describe('capture_screenshot host window fallback', () => {
     request.mockClear();
     const retry = await tools.captureScreenshot('instance:test', 'png');
     expect(JSON.parse((retry.content[0] as { text: string }).text).source).toBe('host-window');
-    expect(hostCapture.mock.calls[mismatchAt]).toEqual(['TestPlace']);
+    expect(hostCapture.mock.calls[mismatchAt]).toEqual(['TestPlace', undefined, { accept: expect.any(Function) }]);
     expect(request.mock.calls.filter(([endpoint]) => endpoint === '/api/capture-markers')
       .map(([, data]) => (data as { action: string }).action)).toEqual(['prepare', 'query', 'show', 'hide', 'finish']);
   });

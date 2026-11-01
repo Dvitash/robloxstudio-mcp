@@ -44,6 +44,10 @@ Tool descriptions explain selection. Input schemas explain arguments. This guide
 
 Start solo_playtest or multiplayer_playtest before targeting a live server or client. Stop the playtest when the scenario is complete.
 
+solo_playtest start defaults to mode=play (server and client-1); mode=run starts a server only. A start (solo or multiplayer) returns only after every runtime peer answers a trivial eval, so the next eval, log, or capture call can run at once. Its targets list has one {role, instance_id, target} per peer: pass that instance_id, plus target on tools that take one, to address the peer. Raise ready_timeout_s (default 90) for slow places. A failed start lists notReady peers with their last error.
+
+To wait for game state, pass wait_until to eval_server_runtime or eval_client_runtime instead of sleeping or repeating calls. wait_until is a Luau expression such as workspace:GetAttribute("Round") == 2, or a block that returns a value (text containing the word return runs as a block). It is polled every poll_ms (default 250) until truthy or until timeout_s (default 20, max 600) passes. Runtime errors count as not yet true, so a condition may index objects that do not exist yet; on timeout the result carries the last value and lastError. A compile error, a stopped playtest, or a vanished peer ends the wait at once. code, when given, runs once before polling. The result is {satisfied, value, elapsed_ms, polls}, plus error when satisfied is false; value is the condition's result as text.
+
 execute_luau runs through the Studio plugin. eval_server_runtime and eval_client_runtime run inside a live game VM and share that VM's require cache with game scripts. Use the eval tools when module state or the runtime Script or LocalScript environment matters.
 
 Requests to a client Peer go through the server Peer's broker. client_broker_timeout and client_bridge_unresponsive describe that channel, not the game: the client can keep running while its bridge is stalled. Their message says whether the request reached the client, is still running there, or is held up between server and client. Do not treat them as a client hang. Check the game through eval_server_runtime, and restart the playtest if the bridge does not recover.
@@ -53,6 +57,20 @@ Read output with get_runtime_logs. Reuse nextCursor as cursor for one Instance, 
 - Each Peer VM retains approximately 64 KiB of message text, rather than a fixed message count. Reads do not consume or clear the buffer; incoming messages evict old entries.
 - totalDropped sums lifetime eviction counts from successfully read Peers. It counts messages evicted, not messages missed by this caller, and may decrease when Peers fail, disconnect, or reload.
 - For successfully read Peers, nextCursor advances past all captured entries, including those omitted by filter or tail. It is a continuation watermark, not pagination through omitted results; continuing from it will not return those entries.
+
+## Long calls and pending results
+
+MCP clients abandon a call after their own timeout (omp uses 30 seconds unless the server entry sets timeout), and the caller then cannot tell what happened. solo_playtest start and stop, multiplayer_playtest start, add_players, leave_client and end, and wait_until therefore answer within a 25 second response budget (ROBLOX_STUDIO_MCP_RESPONSE_BUDGET_MS). Work still running then returns state "pending" with a requestId and keeps running. Call get_request_status with that request_id and wait_ms up to 25000 until state is "completed"; the original result follows the status item. Do not repeat the call: an identical call while it runs joins the same job instead of starting the playtest twice. Finished results stay available for five minutes in the same server process.
+
+## Screenshots
+
+capture_screenshot returns the 3D viewport, cropped from the Studio window, for the edit view or a running playtest. In a solo playtest it shows the client view; in a multiplayer playtest the role-suffixed instance_id from start targets (<id>-server, <id>-client-N) picks that peer's window.
+
+- frames=N with interval_ms (default 500) captures a timed sequence: at most 16 frames within 20 seconds. grid=true returns them as one numbered contact sheet, the cheapest way to see motion or an animation; without grid each frame is a separate image. The text item lists each frame's atMs offset.
+- save_to also writes the image(s) to disk, as png when the path ends in .png; several frames get -01, -02 suffixes.
+- Take simulate_mouse_input coordinates from a single-frame capture, never from a contact sheet.
+- On Linux, capture reads the Studio window from its X display, even while the window is covered or partly off-screen. It needs xprop and python3 with libX11 and libXcomposite. ROBLOX_STUDIO_HOST_CAPTURE=0 switches to Studio's own capture.
+- Use capture_screenshot frames or grid instead of scrot, xwd, or ffmpeg recordings of the desktop.
 
 ## Simulation and input
 

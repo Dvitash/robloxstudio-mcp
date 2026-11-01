@@ -321,9 +321,31 @@ describe('HTTP Server', () => {
         action: 'start',
         numPlayers: 2,
         timeout: 5,
+        ready_timeout_s: 30,
         instance_id: 'place:test',
       });
-      expect(multiplayerPlaytest).toHaveBeenLastCalledWith('start', 2, undefined, undefined, undefined, 5, 'place:test');
+      expect(multiplayerPlaytest).toHaveBeenLastCalledWith('start', 2, undefined, undefined, undefined, 5, 'place:test', 30);
+    });
+
+    test('runtime eval, playtest and capture handlers forward wait and sequence options', async () => {
+      const evalServerRuntime = jest.fn(async () => ({ content: [] }));
+      const evalClientRuntime = jest.fn(async () => ({ content: [] }));
+      const soloPlaytest = jest.fn(async () => ({ content: [] }));
+      const captureScreenshot = jest.fn(async () => ({ content: [] }));
+      const fakeTools = { evalServerRuntime, evalClientRuntime, soloPlaytest, captureScreenshot } as unknown as RobloxStudioTools;
+      const wait = { wait_until: 'workspace:GetAttribute("Ready")', timeout_s: 12, poll_ms: 100 };
+
+      await TOOL_HANDLERS.eval_server_runtime(fakeTools, { instance_id: 'place:test', ...wait });
+      await TOOL_HANDLERS.eval_client_runtime(fakeTools, { code: 'return 1', target: 'client-2', ...wait });
+      await TOOL_HANDLERS.solo_playtest(fakeTools, { action: 'start', ready_timeout_s: 45 });
+      await TOOL_HANDLERS.capture_screenshot(fakeTools, { frames: 4, interval_ms: 250, grid: true, save_to: '/tmp/shot.png' });
+
+      expect(evalServerRuntime).toHaveBeenLastCalledWith(undefined, 'place:test', wait);
+      expect(evalClientRuntime).toHaveBeenLastCalledWith('return 1', 'client-2', undefined, wait);
+      expect(soloPlaytest).toHaveBeenLastCalledWith('start', undefined, undefined, undefined, 45);
+      expect(captureScreenshot).toHaveBeenLastCalledWith(undefined, undefined, undefined, {
+        frames: 4, interval_ms: 250, grid: true, save_to: '/tmp/shot.png',
+      });
     });
 
     test('selection handler forwards the lifecycle action and options together', async () => {

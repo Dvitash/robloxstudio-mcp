@@ -11,6 +11,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { rgbaToPng } from '../png-encoder.js';
 import * as hostCapture from '../host-capture.js';
+import { StudioHttpClient } from '../tools/studio-client.js';
 
 const SMOKE_TEST_CLAIM_OWNER = 'smoke-test';
 
@@ -24,6 +25,15 @@ function claimQueuedRequest(bridge: BridgeService, transportPeerId: string) {
       data: queued.data as Record<string, unknown>,
     },
   };
+}
+
+// Answers the playtest readiness probe (`return true`) as a live plugin
+// would; every other request still goes through the bridge queue.
+function answerRuntimeEvals(): jest.SpyInstance {
+  const forward = StudioHttpClient.prototype.request as (...args: unknown[]) => Promise<unknown>;
+  return jest.spyOn(StudioHttpClient.prototype, 'request').mockImplementation(function (this: StudioHttpClient, ...args: unknown[]) {
+    return args[0] === '/api/eval-runtime' ? Promise.resolve({ bridge: 'ok', ok: true, result: 'true' }) : forward.apply(this, args);
+  } as never);
 }
 
 const READY = {
@@ -68,6 +78,12 @@ function readRegistryEvents(registryDir: string): Record<string, unknown>[] {
 }
 
 describe('Smoke', () => {
+  // Synthetic peers: keep capture on the Studio-first path on every OS
+  // (Linux would otherwise try the X11 window of a managed Studio first).
+  let hostFirst: jest.SpyInstance;
+  beforeEach(() => { hostFirst = jest.spyOn(hostCapture, 'isHostCapturePreferred').mockReturnValue(false); });
+  afterEach(() => hostFirst.mockRestore());
+
   test('sanitized Codex environment still detects a WSL host with working Windows interop', () => {
     const kernelVersion = process.platform === 'linux' && fs.existsSync('/proc/version')
       ? fs.readFileSync('/proc/version', 'utf8')
@@ -2819,7 +2835,8 @@ describe('Smoke', () => {
     const tools = new RobloxStudioTools(bridge);
     bridge.registerPeer(READY);
 
-    const resultPromise = tools.startPlaytest('play');
+    const answers = answerRuntimeEvals();
+    const resultPromise = tools.startPlaytest('play').finally(() => answers.mockRestore());
     const pending = claimQueuedRequest(bridge, 'session-1');
     expect(pending).toBeTruthy();
     bridge.resolveRequest(pending!.requestId, { success: true, message: 'started' });
@@ -2874,7 +2891,8 @@ describe('Smoke', () => {
     const tools = new RobloxStudioTools(bridge);
     bridge.registerPeer(READY);
 
-    const resultPromise = tools.startPlaytest('run');
+    const answers = answerRuntimeEvals();
+    const resultPromise = tools.startPlaytest('run').finally(() => answers.mockRestore());
     const pending = claimQueuedRequest(bridge, 'session-1');
     expect(pending).toBeTruthy();
     bridge.resolveRequest(pending!.requestId, { success: true, message: 'started' });
@@ -3115,7 +3133,8 @@ describe('Smoke', () => {
     const tools = new RobloxStudioTools(bridge);
     bridge.registerPeer(READY);
 
-    const resultPromise = tools.soloPlaytest('start', 'run', 1);
+    const answers = answerRuntimeEvals();
+    const resultPromise = tools.soloPlaytest('start', 'run', 1).finally(() => answers.mockRestore());
     const pending = claimQueuedRequest(bridge, 'session-1');
     expect(pending).toBeTruthy();
     bridge.resolveRequest(pending!.requestId, { success: true, message: 'started' });
@@ -3135,8 +3154,53 @@ describe('Smoke', () => {
     expect(body).toEqual({
       success: true,
       action: 'start',
-      message: 'Playtest started.',
+      mode: 'run',
+      message: 'Playtest started; every runtime peer answered an eval.',
       roles: ['edit', 'server'],
+      targets: [{ role: 'server', instance_id: 'instance:test', target: 'server' }],
+    });
+  });
+
+  test('solo_playtest start defaults to play and returns every runtime target', async () => {
+    const bridge = new BridgeService();
+    const tools = new RobloxStudioTools(bridge);
+    bridge.registerPeer(READY);
+
+    const answers = answerRuntimeEvals();
+    const resultPromise = tools.soloPlaytest('start').finally(() => answers.mockRestore());
+    const pending = claimQueuedRequest(bridge, 'session-1');
+    expect(pending?.request).toMatchObject({ endpoint: '/api/start-playtest', data: { mode: 'play' } });
+    bridge.resolveRequest(pending!.requestId, { success: true, message: 'started' });
+    for (const role of ['server', 'client']) {
+      bridge.registerPeer({ ...READY, peerId: `${role}-1`, transportPeerId: 'server-1', role, isRunning: true });
+    }
+
+    expect(JSON.parse((await resultPromise).content[0].text)).toMatchObject({
+      success: true,
+      mode: 'play',
+      targets: [
+        { role: 'server', instance_id: 'instance:test', target: 'server' },
+        { role: 'client-1', instance_id: 'instance:test', target: 'client-1' },
+      ],
+    });
+  });
+
+  test('solo_playtest start names the peers that never answer the readiness eval', async () => {
+    const bridge = new BridgeService();
+    const tools = new RobloxStudioTools(bridge);
+    bridge.registerPeer(READY);
+
+    const resultPromise = tools.soloPlaytest('start', 'run', undefined, READY.instanceId, 1);
+    const pending = claimQueuedRequest(bridge, 'session-1');
+    bridge.resolveRequest(pending!.requestId, { success: true, message: 'started' });
+    bridge.registerPeer({ ...READY, peerId: 'server-1', transportPeerId: 'server-1', role: 'server', isRunning: true });
+
+    expect(JSON.parse((await resultPromise).content[0].text)).toMatchObject({
+      success: false,
+      error: 'start_failed',
+      message: 'Playtest did not become ready before ready_timeout_s.',
+      runtimeReady: false,
+      notReady: [{ role: 'server', error: expect.stringContaining('timeout') }],
     });
   });
 
@@ -3283,7 +3347,7 @@ describe('Smoke', () => {
     expect(JSON.parse((await resultPromise).content[0].text)).toMatchObject({
       success: false,
       action: 'start',
-      message: 'Playtest did not become ready before timeout.',
+      message: 'Playtest did not become ready before ready_timeout_s.',
       runtimeReady: false,
       timedOut: true,
       roles: ['edit'],
@@ -3354,7 +3418,9 @@ describe('Smoke', () => {
     });
     bridge.registerPeer(READY);
 
-    const resultPromise = tools.multiplayerPlaytest('start', 1, undefined, undefined, undefined, 2, 'instance:test');
+    const answers = answerRuntimeEvals();
+    const resultPromise = tools.multiplayerPlaytest('start', 1, undefined, undefined, undefined, 2, 'instance:test')
+      .finally(() => answers.mockRestore());
     const pending = claimQueuedRequest(bridge, 'session-1');
     expect(pending?.request).toMatchObject({
       endpoint: '/api/multiplayer-test-start',
@@ -3393,9 +3459,13 @@ describe('Smoke', () => {
     expect(body).toEqual({
       success: true,
       action: 'start',
-      message: 'Multiplayer playtest started.',
+      message: 'Multiplayer playtest started; every runtime peer answered an eval.',
       multiplayerGroupId: 'test-1',
       roles: ['edit', 'server', 'client-1'],
+      targets: [
+        { role: 'server', instance_id: 'instance:server-server', target: 'server' },
+        { role: 'client-1', instance_id: 'instance:client-1-client-1', target: 'client-1' },
+      ],
       playerCount: 1,
     });
   });
