@@ -1590,7 +1590,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         },
         instance_id: {
           type: 'string',
-          description: 'Studio process ID; <id>-server or <id>-client-N picks a peer.'
+          description: 'Studio process ID, or targets[].instance_id from playtest start.'
         }
       },
     }
