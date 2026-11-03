@@ -1,3 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { createContext, runInContext } from 'node:vm';
+import ts from 'typescript';
 import { BridgeService, RoutingFailure } from '../bridge-service.js';
 import { RobloxStudioTools } from '../tools/index.js';
 import { StudioHttpClient } from '../tools/studio-client.js';
@@ -201,5 +205,180 @@ describe('preview_ui', () => {
     release.resolve({ success: true, ...SUMMARY });
     await Promise.all([preview, screenshot]);
     expect(steps(calls)).toEqual(['mount', '/api/capture-studio', '/api/capture-studio']);
+  });
+});
+
+// Execute the plugin's TypeScript with only the Roblox primitives used by these helpers.
+// The production build separately checks roblox-ts/Luau compatibility.
+function pluginFixture() {
+  const context = createContext({ console });
+  runInContext(`
+    String.prototype.size = function () { return this.length; };
+    String.prototype.sub = function (first, last) {
+      const index = n => n < 0 ? this.length + n : n - 1;
+      return this.slice(index(first), last === undefined ? undefined : index(last) + 1);
+    };
+    String.prototype.match = function (pattern) {
+      const match = new RegExp(pattern.replaceAll("%a", "a-zA-Z").replaceAll("%w", "a-zA-Z0-9")).exec(this);
+      return match ? [match[0]] : [];
+    };
+    String.prototype.gsub = function (pattern, replacement) { return [this.split(pattern).join(replacement)]; };
+    Array.prototype.size = function () { return this.length; };
+    const math = { max: Math.max, round: Math.round, floor: Math.floor };
+    const error = message => { throw new Error(message); };
+    const pcall = callback => { try { return [true, callback()]; } catch (err) { return [false, err]; } };
+    class Vector2 {
+      constructor(X, Y) { this.X = X; this.Y = Y; }
+      add(other) { return new Vector2(this.X + other.X, this.Y + other.Y); }
+      sub(other) { return new Vector2(this.X - other.X, this.Y - other.Y); }
+    }
+    Vector2.zero = new Vector2(0, 0);
+    class UDim2 {
+      constructor(xs, xo, ys, yo) { this.X = { Scale: xs, Offset: xo }; this.Y = { Scale: ys, Offset: yo }; }
+      static fromOffset(x, y) { return new UDim2(0, x, 0, y); }
+      static fromScale(x, y) { return new UDim2(x, 0, y, 0); }
+    }
+    let inset = 0, coreHits = [], previewHits = [];
+    const services = {
+      GuiService: { GetGuiInset: () => [new Vector2(0, inset)] },
+      CoreGui: { GetGuiObjectsAtPosition: () => coreHits },
+      StarterGui: { GetGuiObjectsAtPosition: () => previewHits },
+      StudioTestService: {}, ScriptEditorService: {},
+    };
+    const game = {
+      GetService(name) {
+        const service = services[name] || this.children.find(child => child.Name === name);
+        if (service) return service;
+        throw new Error("Unknown service " + name);
+      },
+      Workspace: { CurrentCamera: { ViewportSize: new Vector2(800, 600) } },
+      Name: "game", Parent: undefined, children: [],
+      FindFirstChild(name) { return this.children.find(child => child.Name === name); },
+      GetChildren() { return this.children; },
+    };
+    function node(Name, ClassName = "Folder", Parent = game) {
+      const result = {
+        Name, ClassName, Parent, children: [], Visible: true, Enabled: true,
+        IsA(name) { return name === ClassName || (name === "GuiObject" && ["Frame", "TextButton"].includes(ClassName)); },
+        FindFirstChild(name) { return this.children.find(child => child.Name === name); },
+        GetChildren() { return this.children; },
+      };
+      Parent?.children.push(result);
+      return result;
+    }
+    const Instance = class { constructor(ClassName) { this.ClassName = ClassName; } };
+    const Color3 = { fromRGB: () => ({}) };
+    const Enum = { ZIndexBehavior: { Sibling: "Sibling" } };
+    const HttpService = { GenerateGUID: () => "fixture" };
+    const RunService = {};
+    let utils;
+    const require = name => {
+      if (name === "./PathAmbiguity") return { default: {} };
+      if (name === "../Utils") return { default: utils };
+      if (name === "@rbxts/services") return { HttpService, RunService };
+      if (name === "../handlers/InputHandlers") return {};
+      throw new Error("Unexpected module " + name);
+    };
+    let module = { exports: {} }, exports = module.exports;
+  `, context);
+  const compile = (file: string, extraExports?: string) => {
+    let source = readFileSync(resolve(__dirname, '../../../../studio-plugin/src/modules', file), 'utf8');
+    if (extraExports) source = source.replace(/export = \{[^\n]+\};/, `export = { ${extraExports} };`);
+    return ts.transpileModule(source, {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+  };
+  runInContext(compile('Utils.ts'), context);
+  runInContext('utils = module.exports; module = { exports: {} }; exports = module.exports;', context);
+  runInContext(compile('preview/UiPreview.ts', 'resolveTarget, targetSegments, coreGuiAt, createHost, clickPoints'), context);
+  return {
+    run: (code: string) => runInContext(code, context),
+  };
+}
+
+describe('preview_ui plugin path and topbar regressions', () => {
+  test.each([
+    'ServerStorage/ServerModules/Stories/RoundEnd.story',
+    'game/ServerStorage/ServerModules/Stories/RoundEnd.story',
+    'ServerStorage.ServerModules.Stories.RoundEnd',
+    'game.ServerStorage.ServerModules.Stories["RoundEnd.story"]',
+    'game.ServerStorage.ServerModules.Stories["RoundEnd"]',
+  ])('resolves story target %s', target => {
+    const f = pluginFixture();
+    f.run('const stories = node("Stories", "Folder", node("ServerModules", "Folder", node("ServerStorage"))); const story = node("RoundEnd.story", "ModuleScript", stories);');
+    expect(f.run(`module.exports.resolveTarget(${JSON.stringify(target)}) === story`)).toBe(true);
+  });
+
+  test('preserves slashes, dots, and escaped quotes inside bracketed names', () => {
+    const f = pluginFixture();
+    f.run('const storage = node("ReplicatedStorage"); const folder = node(\'UI/"quoted".folder\', "Folder", storage); const story = node("Shop.story", "ModuleScript", folder);');
+    const target = 'game/ReplicatedStorage["UI/\\"quoted\\".folder"]/Shop';
+    expect(f.run(`module.exports.resolveTarget(${JSON.stringify(target)}) === story`)).toBe(true);
+  });
+
+  test('keeps an exact nested child named story and does not append a second suffix', () => {
+    const f = pluginFixture();
+    f.run(`
+      const storage = node("ReplicatedStorage");
+      const nested = node("story", "ModuleScript", node("Group", "Folder", storage));
+      node("Missing.story.story", "ModuleScript", storage);
+    `);
+    expect(f.run('module.exports.resolveTarget("ReplicatedStorage.Group.story") === nested')).toBe(true);
+    expect(() => f.run('module.exports.resolveTarget("ReplicatedStorage.Missing.story")')).toThrow(/No instance at/);
+    expect(() => f.run('module.exports.resolveTarget(\'ReplicatedStorage["Missing.story"]\')')).toThrow(/No instance at/);
+  });
+
+  test('prefers an exact child and lists at most eight preview siblings on a miss', () => {
+    const f = pluginFixture();
+    f.run(`
+      const storage = node("ReplicatedStorage");
+      const exact = node("Shop", "Frame", storage);
+      node("Shop.story", "ModuleScript", storage);
+      node("NotPreviewable", "Folder", storage);
+      for (let i = 0; i < 10; i++) node("Candidate" + i + ".story", "ModuleScript", storage);
+    `);
+    expect(f.run('module.exports.resolveTarget("ReplicatedStorage.Shop") === exact')).toBe(true);
+    expect(() => f.run('module.exports.resolveTarget("ReplicatedStorage.Missing")'))
+      .toThrow(/No instance at .*missing Missing under game.ReplicatedStorage.*Candidate0.story.*Candidate7.story/);
+    try {
+      f.run('module.exports.resolveTarget("ReplicatedStorage.Missing")');
+    } catch (err) {
+      expect(String(err)).not.toMatch(/Candidate8|Candidate9|NotPreviewable/);
+    }
+  });
+
+  test.each([0, 36, 80])('reserves at least 58 viewport pixels when the reported inset is %i', inset => {
+    const f = pluginFixture();
+    const reserve = Math.max(58, inset);
+    f.run(`inset = ${inset};`);
+    expect(f.run(`module.exports.coreGuiAt(new Vector2(10, ${reserve - 1}))`)).toMatch(/CoreGui topbar reserve/);
+    expect(f.run(`module.exports.coreGuiAt(new Vector2(10, ${reserve}))`)).toBeUndefined();
+    f.run('coreHits = [{ Active: true, GetFullName: () => "CoreGui.Unibar" }];');
+    expect(f.run('module.exports.coreGuiAt(new Vector2(300, 200))')).toBe('CoreGui.Unibar');
+  });
+
+  test('insets story/GuiObject content without resizing full-screen ScreenGui previews', () => {
+    const f = pluginFixture();
+    f.run('inset = 36; const hosted = module.exports.createHost(false, true); const full = module.exports.createHost(false, false);');
+    expect(f.run('hosted[0].IgnoreGuiInset')).toBe(true);
+    expect(f.run('hosted[1].Position.Y.Offset')).toBe(58);
+    expect(f.run('hosted[1].Size.Y.Offset')).toBe(-58);
+    expect(f.run('full[1].Position.Y.Offset')).toBe(0);
+    expect(f.run('full[1].Size.Y.Offset === 0')).toBe(true);
+  });
+
+  test('picks a clear part of a partially shielded button and explains a fully shielded one', () => {
+    const f = pluginFixture();
+    f.run(`
+      const screen = node("Screen", "ScreenGui");
+      const button = node("Buy", "TextButton", screen);
+      button.AbsolutePosition = new Vector2(0, 20);
+      button.AbsoluteSize = new Vector2(100, 60);
+      previewHits = [button];
+      const points = module.exports.clickPoints(button, button);
+    `);
+    expect(f.run('points.length > 0 && points.every(point => point.Y >= 58)')).toBe(true);
+    f.run('button.AbsolutePosition = new Vector2(0, 0); button.AbsoluteSize = new Vector2(100, 40);');
+    expect(() => f.run('module.exports.clickPoints(button, button)')).toThrow(/CoreGui topbar reserve.*viewport y=0..57/);
   });
 });

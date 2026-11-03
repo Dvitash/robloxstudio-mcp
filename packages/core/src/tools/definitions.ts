@@ -1605,11 +1605,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         action: {
           type: 'string',
           enum: ['mount', 'set_controls', 'click', 'type', 'inspect', 'screenshot', 'unmount'],
-          description: 'mount first; the preview persists until unmount and stories hot-reload on edits.'
+          description: 'mount first; the preview persists until unmount and stories hot-reload on edits. Story/GuiObject content is inset below the CoreGui topbar reserve; ScreenGui layout is preserved.'
         },
         target: {
           type: 'string',
-          description: 'mount: story module, ScreenGui, or GuiObject path.'
+          description: 'mount: story module, ScreenGui, or GuiObject path. Dot/bracket and slash separators are accepted; a missing final .story suffix is inferred. Quote names containing dots or slashes with ["name"].'
         },
         controls: {
           type: 'object',

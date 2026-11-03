@@ -50,6 +50,8 @@ const TEXT_LIMIT = 120;
 // Fractions across an element's width and height tried for a click, centre first: the click moves
 // off-centre when Roblox UI or another preview object covers the centre.
 const CLICK_FRACTIONS = [0.5, 0.3, 0.7, 0.15, 0.85];
+// Studio 0.740+ reserves this strip for CoreGui even when GetGuiInset reports 0 or 36.
+const MIN_TOPBAR_RESERVE = 58;
 // Story frames kept when a nested Vide error is unwrapped.
 const STORY_FRAME_LIMIT = 8;
 const NATIVE_SCRIPT_NOTE =
@@ -246,6 +248,83 @@ function relativePath(root: Instance, instance: Instance): string {
 		node = node.Parent;
 	}
 	return parts.join("/");
+}
+
+// Keep canonical bracketed names intact, including slashes, dots, and escaped quotes.
+// Bare slash-separated paths are accepted alongside the canonical dot/bracket form.
+function targetSegments(path: string): string[] {
+	const parts: string[] = [];
+	let part = "";
+	let quote = "";
+	let escaped = false;
+	for (let i = 1; i <= path.size(); i++) {
+		const ch = path.sub(i, i);
+		if (quote !== "") {
+			part += ch;
+			if (escaped) escaped = false;
+			else if (ch === "\\") escaped = true;
+			else if (ch === quote) quote = "";
+		} else if (ch === "[" && (path.sub(i + 1, i + 1) === '"' || path.sub(i + 1, i + 1) === "'")) {
+			if (part !== "") parts.push(part);
+			part = ch;
+			quote = path.sub(i + 1, i + 1);
+			part += quote;
+			i += 1;
+		} else if (ch === "]" && part.sub(1, 1) === "[") {
+			parts.push(part + ch);
+			part = "";
+		} else if (ch === "." || ch === "/") {
+			if (part !== "") parts.push(part);
+			part = "";
+		} else {
+			part += ch;
+		}
+	}
+	if (part !== "") parts.push(part);
+	if (parts[0] === "game") parts.shift();
+	// Legacy paths commonly leave the final *.story name unquoted.
+	const last = parts.size() - 1;
+	if (last > 0 && parts[last] === "story" && parts[last - 1].sub(1, 1) !== "[") {
+		parts[last - 1] += ".story";
+		parts.pop();
+	}
+	return parts;
+}
+
+function resolveTarget(path: string): Instance {
+	// Preserve all existing canonical/legacy exact-path semantics before trying aliases.
+	const exact = Utils.getInstanceByPath(path);
+	if (exact !== undefined) return exact;
+	const parts = targetSegments(path);
+	let parent: Instance = game;
+	for (let i = 0; i < parts.size(); i++) {
+		const seg = parts[i];
+		const bracketed = seg.sub(1, 1) === "[";
+		const parentPath = Utils.getInstancePath(parent);
+		let child = bracketed
+			? Utils.getInstanceByPath(`${parentPath}${seg}`)
+			: parent === game ? Utils.getInstanceByPath(seg) : parent.FindFirstChild(seg);
+		if (child === undefined && i === parts.size() - 1) {
+			if (bracketed) {
+				// Insert the suffix inside the existing quoted name; Utils handles its escapes.
+				if (seg.sub(-8, -3) !== ".story") {
+					child = Utils.getInstanceByPath(`${parentPath}${seg.sub(1, -3)}.story${seg.sub(-2)}`);
+				}
+			} else if (seg.sub(-6) !== ".story") {
+				child = parent.FindFirstChild(`${seg}.story`);
+			}
+		}
+		if (child === undefined) {
+			const names = parent.GetChildren()
+				.filter((sibling) => sibling.Name.sub(-6) === ".story" || sibling.IsA("GuiObject") || sibling.IsA("ScreenGui"))
+				.map((sibling) => sibling.Name);
+			names.sort();
+			const suggestions = names.size() > 0 ? ` Preview children: ${names.filter((_, index) => index < 8).join(", ")}.` : "";
+			fail(`No instance at ${path}: missing ${seg} under ${parentPath}.${suggestions}`);
+		}
+		parent = child;
+	}
+	return parent;
 }
 
 function resolveElement(root: Instance, path: unknown): Instance {
@@ -639,7 +718,12 @@ function summary(preview: Preview): Record<string, unknown> {
 	return result;
 }
 
-function createHost(backdrop: boolean): [ScreenGui, Frame] {
+function topbarReserve(): number {
+	const [inset] = GuiService.GetGuiInset();
+	return math.max(inset.Y, MIN_TOPBAR_RESERVE);
+}
+
+function createHost(backdrop: boolean, insetContent: boolean): [ScreenGui, Frame] {
 	const host = new Instance("ScreenGui");
 	host.Name = `${HOST_PREFIX}${HttpService.GenerateGUID(false)}`;
 	host.Archivable = false;
@@ -658,7 +742,9 @@ function createHost(backdrop: boolean): [ScreenGui, Frame] {
 	}
 	const content = new Instance("Frame");
 	content.Name = "Content";
-	content.Size = UDim2.fromScale(1, 1);
+	const top = insetContent ? topbarReserve() : 0;
+	content.Position = UDim2.fromOffset(0, top);
+	content.Size = new UDim2(1, 0, 1, -top);
 	content.BackgroundTransparency = 1;
 	content.ZIndex = 1;
 	content.Parent = host;
@@ -675,8 +761,7 @@ function countScripts(root: Instance): number {
 
 function mountPreview(data: Record<string, unknown>): Record<string, unknown> {
 	if (!typeIs(data.target, "string") || data.target === "") fail("target is required: the canonical path of a story module, ScreenGui, or GuiObject.");
-	const source = Utils.getInstanceByPath(data.target);
-	if (source === undefined) fail(`No instance at ${data.target}.`);
+	const source = resolveTarget(data.target);
 	let ancestor: Instance | undefined = source;
 	while (ancestor !== undefined) {
 		if (ancestor.Name.sub(1, HOST_PREFIX.size()) === HOST_PREFIX) fail("target is part of a UI preview; pass the original instance.");
@@ -713,7 +798,7 @@ function mountPreview(data: Record<string, unknown>): Record<string, unknown> {
 		}
 	}
 
-	const [host, content] = createHost(data.backdrop !== false);
+	const [host, content] = createHost(data.backdrop !== false, kind !== "screengui");
 	const preview: Preview = {
 		kind,
 		target: Utils.getInstancePath(source),
@@ -807,14 +892,15 @@ function hitAt(preview: Preview, position: Vector2): Record<string, unknown> | u
 	return top === undefined ? undefined : { top: relativePath(root, top) };
 }
 
-// The topmost CoreGui GuiObject (the top bar or other Roblox UI) that takes input at a screen point;
-// CreateVirtualInput rejects an edit-mode click there ("position hits CoreGUI").
-function coreGuiAt(position: Vector2): GuiObject | undefined {
+// CoreGui's reserved top strip is not reliably exposed as a hit-testable descendant in edit mode.
+function coreGuiAt(position: Vector2): string | undefined {
+	const reserve = topbarReserve();
+	if (position.Y >= 0 && position.Y < reserve) return `CoreGui topbar reserve (viewport y=0..${reserve - 1})`;
 	const [inset] = GuiService.GetGuiInset();
 	const guiPosition = position.sub(inset);
 	const [ok, hits] = pcall(() => CoreGui.GetGuiObjectsAtPosition(guiPosition.X, guiPosition.Y));
 	if (!ok) return undefined;
-	return hits.find((hit) => hit.Active || hit.IsA("GuiButton") || hit.BackgroundTransparency < 1);
+	return hits.find((hit) => hit.Active || hit.IsA("GuiButton") || hit.BackgroundTransparency < 1)?.GetFullName();
 }
 
 // Whether the topmost preview GuiObject at a screen point is `element` or inside it.
@@ -860,8 +946,8 @@ function clickPoints(element: Instance, root: Instance): Vector2[] {
 	if (cover !== undefined) {
 		const [inset] = GuiService.GetGuiInset();
 		fail(
-			`${relativePath(root, element)} is covered by Roblox UI (${cover.GetFullName()}) wherever it shows, and edit-mode clicks there are rejected. ` +
-				`Lay the story out below the top bar (GuiService:GetGuiInset() is ${inset.Y} px) or click x and y elsewhere.`,
+			`${relativePath(root, element)} is covered by Roblox UI (${cover}) wherever it shows, and edit-mode clicks there are rejected. ` +
+				`Use viewport y >= ${topbarReserve()} (GuiService:GetGuiInset() reports ${inset.Y} px) or move the element below that reserve.`,
 		);
 	}
 	return [center];
@@ -879,7 +965,7 @@ function clickPreview(preview: Preview, data: Record<string, unknown>): Record<s
 		const cover = coreGuiAt(point);
 		if (cover !== undefined) {
 			fail(
-				`(${point.X}, ${point.Y}) is over Roblox UI (${cover.GetFullName()}); edit-mode clicks there are rejected. ` +
+				`(${point.X}, ${point.Y}) is over Roblox UI (${cover}); edit-mode clicks there are rejected. ` +
 					"Click by element instead: it picks a point of the element clear of Roblox UI.",
 			);
 		}
