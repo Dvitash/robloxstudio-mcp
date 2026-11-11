@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
+import { defaultStudioActivityDir } from './managed-instance-registry.js';
 import type {
   StudioCancellationReason,
   StudioQueuedRequest,
@@ -498,6 +501,7 @@ const MAX_PENDING_REQUESTS = 1024;
 const MAX_PENDING_REQUEST_BYTES = 64 * 1024 * 1024;
 const CANCELLATION_TOMBSTONE_TTL_MS = 60_000;
 const MAX_CANCELLATION_TOMBSTONES = 4096;
+const ACTIVITY_WRITE_INTERVAL_MS = 30_000;
 // Node socket backpressure does not represent Studio's MessageReceived capacity.
 // Keep each consumer's outstanding execution window small enough to avoid flooding it.
 const MAX_OUTSTANDING_REQUESTS_PER_TRANSPORT = 4;
@@ -557,6 +561,8 @@ export class BridgeService implements StudioTransportQueue {
   private readonly requestTimeout = 30_000;
   // Keyed by instance and peer so a retrying plugin keeps one, refreshed entry.
   private readonly versionRejections = new Map<string, PluginVersionRejection>();
+  private readonly activityDir = defaultStudioActivityDir();
+  private readonly activityWrittenAt = new Map<string, number>();
 
   onPeerRegistered(listener: PeerRegisteredListener): () => void {
     this.peerRegisteredListeners.add(listener);
@@ -1405,7 +1411,30 @@ export class BridgeService implements StudioTransportQueue {
     if (signal?.aborted) abortListener();
     const target = this.getPeerById(targetPeerId);
     if (this.pendingRequests.has(requestId) && target) this.notifyRequestAvailable(target.transportPeerId);
+    if (target) this.recordInstanceActivity(target.instanceId);
     return { kind: 'pending', requestId, request };
+  }
+
+  // Touches <activityDir>/<instanceId> when a new operation is admitted for that
+  // Studio, at most once per ACTIVITY_WRITE_INTERVAL_MS. Host tooling closes
+  // Studios whose file has gone stale. A failed write never affects the request.
+  private recordInstanceActivity(instanceId: string): void {
+    const now = Date.now();
+    const writtenAt = this.activityWrittenAt.get(instanceId);
+    if (writtenAt !== undefined && now - writtenAt < ACTIVITY_WRITE_INTERVAL_MS) return;
+    this.activityWrittenAt.set(instanceId, now);
+    if (!instanceId || instanceId === '.' || instanceId === '..' || path.basename(instanceId) !== instanceId) return;
+    try {
+      fs.mkdirSync(this.activityDir, { recursive: true });
+      const fd = fs.openSync(path.join(this.activityDir, instanceId), 'a');
+      try {
+        fs.futimesSync(fd, now / 1000, now / 1000);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      // Activity is advisory.
+    }
   }
 
   // Identical retries of a finished operation recover its retained outcome and
