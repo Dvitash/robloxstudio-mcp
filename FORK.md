@@ -74,6 +74,18 @@ it, and the plugin is built with it.
    never yields. A holder without the route (a build before this patch) keeps the port; the
    claimant logs `Could not claim port` and proxies, promoting when the port frees.
    Tests: `primary-claim`.
+6. `feat(core): record per-Studio MCP activity for the idle reaper`
+   (`bridge-service.ts`, `managed-instance-registry.ts`). When the primary admits a new operation
+   for a peer (not a rejection or a replay of a retained or pending one), it touches
+   `~/.local/state/robloxstudio-mcp/activity/<instanceId>` (the peer's `instanceId`, so a
+   multiplayer runtime writes its role-suffixed id, e.g. `instance:abc-server`). The file is
+   empty; its mtime is the activity time. Writes are throttled to one per 30 s per id, and a
+   failed write never fails the request. Session servers in proxy mode forward every Studio
+   request to the primary's `/proxy`, which admits it there, so all callers count.
+   `spark-worktree-desktop` maps a Studio pid to its `managed-instances/v1` record's
+   `instanceId` and closes the Studio when the newest matching file (`<instanceId>` or
+   `<instanceId>-*`) goes stale. `ROBLOXSTUDIO_MCP_ACTIVITY_DIR` overrides the directory; the
+   Jest setup points it at a temporary one. Tests: `studio-activity`.
 
 ### Agent usage
 

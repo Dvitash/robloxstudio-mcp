@@ -83,20 +83,35 @@ interface RegistryLockOwner {
   createdAt: number;
 }
 
+// Per-user state root shared by the managed-instance registry and the activity
+// directory.
+function defaultStateBaseDir(): string {
+  if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
+    return path.join(process.env.LOCALAPPDATA, 'robloxstudio-mcp');
+  }
+
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'robloxstudio-mcp');
+  }
+
+  return path.join(os.homedir(), '.local', 'state', 'robloxstudio-mcp');
+}
+
 export function defaultManagedInstanceRegistryDir(): string {
   if (process.env.ROBLOXSTUDIO_MCP_MANAGED_INSTANCE_REGISTRY_DIR) {
     return process.env.ROBLOXSTUDIO_MCP_MANAGED_INSTANCE_REGISTRY_DIR;
   }
+  return path.join(defaultStateBaseDir(), 'managed-instances', 'v1');
+}
 
-  if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
-    return path.join(process.env.LOCALAPPDATA, 'robloxstudio-mcp', 'managed-instances', 'v1');
+// One empty file per Studio peer, named by its instanceId; its mtime is the last
+// time this broker admitted a request for that peer. Host tooling reads it to
+// close idle Studios.
+export function defaultStudioActivityDir(): string {
+  if (process.env.ROBLOXSTUDIO_MCP_ACTIVITY_DIR) {
+    return process.env.ROBLOXSTUDIO_MCP_ACTIVITY_DIR;
   }
-
-  if (process.platform === 'darwin') {
-    return path.join(os.homedir(), 'Library', 'Application Support', 'robloxstudio-mcp', 'managed-instances', 'v1');
-  }
-
-  return path.join(os.homedir(), '.local', 'state', 'robloxstudio-mcp', 'managed-instances', 'v1');
+  return path.join(defaultStateBaseDir(), 'activity');
 }
 
 function delay(ms: number): Promise<void> {
