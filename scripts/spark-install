@@ -5,9 +5,10 @@
 #
 #   spark-install               install; refuses (exit 3) while a Studio is open or launching
 #   spark-install --check-idle  only report whether a Studio is open or launching (exit 3 if so)
-#   spark-install --force       install even while a Studio is open. That Studio keeps its old
-#                               plugin, so after a version change the new broker rejects it
-#                               (HTTP 426) until the Studio restarts.
+#   spark-install --force       install even while a Studio is open. The new plugin is copied
+#                               into each running Studio's prefix; Studio usually reloads it
+#                               within seconds, but a Studio that doesn't keeps getting HTTP 426
+#                               from the new broker until it restarts.
 #
 # Everything runs inside main, which bash reads whole before running it, because
 # `git reset --hard spark-next` can rewrite this file mid-run.
@@ -29,6 +30,24 @@ started_at() {
 	local age
 	age=$(ps -o etimes= -p "$1" 2>/dev/null | tr -d ' ') || true
 	if [[ -n "$age" ]]; then echo $(( $(date +%s) - age )); fi
+}
+
+refresh_running_plugins() {
+	# spark-worktree-desktop syncs the plugin only into prefixes with no Studio running.
+	# Replace by rename: Studio watches its Plugins folder, and the rename also severs any
+	# hardlink to a sibling prefix's copy.
+	local plugin="$repo/studio-plugin/MCPPlugin.rbxmx" pid prefix dest tmp
+	# Proton's wrapper processes carry the same WINEPREFIX; cmp skips the repeats.
+	for pid in $(ps -eo pid=,args= | awk '/RobloxStudioBeta\.exe/ && !/awk/ {print $1}'); do
+		prefix=$( { tr '\0' '\n' < "/proc/$pid/environ"; } 2>/dev/null | awk -F= '$1=="WINEPREFIX"{print substr($0, 12)}') || continue
+		[[ -n "$prefix" ]] || continue
+		dest="${prefix%/}/drive_c/users/steamuser/AppData/Local/Roblox/Plugins/MCPPlugin.rbxmx"
+		[[ -d "$(dirname "$dest")" ]] || continue
+		cmp -s "$plugin" "$dest" && continue
+		tmp=$(mktemp "$(dirname "$dest")/.MCPPlugin.XXXXXX.tmp")
+		cp "$plugin" "$tmp" && mv -f "$tmp" "$dest"
+		echo "copied the plugin into $prefix (Studio pid $pid)"
+	done
 }
 
 main() {
@@ -110,13 +129,14 @@ main() {
 	for proc in /proc/[0-9]*; do
 		pid=${proc#/proc/}
 		[[ "$pid" == "$main_pid" ]] && continue
-		cmd=$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null) || continue
+		cmd=$( { tr '\0' ' ' < "$proc/cmdline"; } 2>/dev/null) || continue
 		[[ "$cmd" == node\ *"$dist"* ]] || continue
 		started=$(started_at "$pid")
 		if [[ -n "$started" ]] && (( started < built_at )) && kill "$pid" 2>/dev/null; then
 			restarted=$((restarted + 1))
 		fi
 	done
+	refresh_running_plugins
 
 	mkdir -p "$state"
 	git rev-parse HEAD > "$state/installed-head"
