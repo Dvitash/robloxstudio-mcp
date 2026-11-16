@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Gate for Herb's nightly upstream sync (FORK.md, "Nightly upstream sync").
+# Exit 0 and say why when there is work:
+#   - upstream main has commits the newest fork branch lacks (spark-next if a sync left
+#     one, else spark), or
+#   - a synced build waits to be installed and no Studio is open to disturb.
+# Exit 1 when there is nothing to do, so Herb skips the run without a message.
+# Any other exit is a failure that Herb reports.
+set -euo pipefail
+
+repo=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+stamp="${ROBLOXSTUDIO_MCP_STATE_DIR:-$HOME/.local/state/robloxstudio-mcp}/installed-head"
+
+git -C "$repo" fetch -q upstream
+newest=spark
+git -C "$repo" rev-parse -q --verify refs/heads/spark-next >/dev/null && newest=spark-next
+
+behind=$(git -C "$repo" rev-list --count "$newest..upstream/main")
+if (( behind > 0 )); then
+	echo "upstream/main has $behind commit(s) that $newest lacks:"
+	git -C "$repo" log --oneline "$newest..upstream/main" | head -n 40
+	exit 0
+fi
+
+target=$(git -C "$repo" rev-parse "$newest")
+installed=$(cat "$stamp" 2>/dev/null || true)
+if [[ "$installed" != "$target" ]] && "$repo/scripts/spark-install" --check-idle >/dev/null; then
+	echo "$newest ${target:0:7} contains upstream/main but is not installed (installed: ${installed:0:7}), and no Studio is open. Install it."
+	exit 0
+fi
+exit 1

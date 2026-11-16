@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# Put the fork into service on Spark (FORK.md, "Install"): move the live checkout's spark
+# branch to spark-next when a sync left one, build, restart the broker unit and every omp
+# session's server.
+#
+#   spark-install               install; refuses (exit 3) while a Studio is open or launching
+#   spark-install --check-idle  only report whether a Studio is open or launching (exit 3 if so)
+#   spark-install --force       install even while a Studio is open. That Studio keeps its old
+#                               plugin, so after a version change the new broker rejects it
+#                               (HTTP 426) until the Studio restarts.
+#
+# Everything runs inside main, which bash reads whole before running it, because
+# `git reset --hard spark-next` can rewrite this file mid-run.
+set -euo pipefail
+
+repo=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+state="${ROBLOXSTUDIO_MCP_STATE_DIR:-$HOME/.local/state/robloxstudio-mcp}"
+unit=spark-studio-mcp
+port=58741
+dist="$repo/packages/robloxstudio-mcp/dist/index.js"
+
+studios() {
+	# A Studio, or a carbon serve that is launching or holding one.
+	ps -eo pid=,args= | awk '($0 ~ /RobloxStudioBeta\.exe/ || $0 ~ /carbon serve /) && $0 !~ /awk/'
+}
+
+started_at() {
+	# Epoch second the process started; empty if it is gone.
+	local age
+	age=$(ps -o etimes= -p "$1" 2>/dev/null | tr -d ' ') || true
+	if [[ -n "$age" ]]; then echo $(( $(date +%s) - age )); fi
+}
+
+main() {
+	local busy
+	case "${1:-}" in
+		--check-idle)
+			busy=$(studios)
+			[[ -z "$busy" ]] && return 0
+			echo "$busy"
+			return 3
+			;;
+		--force) ;;
+		"")
+			busy=$(studios)
+			if [[ -n "$busy" ]]; then
+				echo "Not installing: a Studio is open or launching:" >&2
+				echo "$busy" >&2
+				return 3
+			fi
+			;;
+		*) echo "usage: $0 [--check-idle | --force]" >&2; return 2 ;;
+	esac
+
+	cd "$repo"
+	[[ "$(git rev-parse --abbrev-ref HEAD)" == spark ]] || { echo "checkout is not on spark" >&2; return 2; }
+	[[ -z "$(git status --porcelain --untracked-files=no)" ]] || { echo "checkout has uncommitted changes" >&2; return 2; }
+
+	# A nightly sync rebases and tests in its own worktree on spark-next, so the live
+	# checkout's sources, dist and plugin stay unchanged until now. It records the spark
+	# commit it started from; adopting spark-next after spark moved would drop those commits.
+	local adopt=""
+	if git rev-parse -q --verify refs/heads/spark-next >/dev/null; then
+		local base
+		base=$(git config --get branch.spark-next.syncbase || true)
+		if [[ "$base" != "$(git rev-parse HEAD)" ]]; then
+			echo "spark moved since the sync started from ${base:0:7}; rebase spark-next again" >&2
+			return 5
+		fi
+		echo "moving spark from $(git rev-parse --short HEAD) to spark-next $(git rev-parse --short spark-next)"
+		git reset --hard spark-next
+		adopt=1
+	fi
+
+	git submodule update --init
+	npm ci
+	npm run build
+	npm --prefix studio-plugin ci
+	npm run build:plugin:artifact
+	local built_at want
+	built_at=$(date +%s)
+	want=$(jq -r .version package.json)
+
+	systemctl --user restart "$unit"
+	local main_pid="" holder="" started
+	for _ in $(seq 60); do
+		main_pid=$(systemctl --user show -p MainPID --value "$unit")
+		holder=$(ss -ltnpH "sport = :$port" | grep -o 'pid=[0-9]*' | head -n 1 | cut -d= -f2 || true)
+		[[ -n "$holder" && "$holder" == "$main_pid" ]] && break
+		# A session server older than the port-claim patch never yields; FORK.md says to kill it.
+		if [[ -n "$holder" && "$main_pid" != 0 ]]; then
+			started=$(started_at "$holder")
+			if [[ -n "$started" ]] && (( started < built_at )); then
+				echo "killing pid $holder, an old session server holding :$port"
+				kill "$holder" 2>/dev/null || true
+			fi
+		fi
+		sleep 0.5
+	done
+	[[ -n "$holder" && "$holder" == "$main_pid" ]] ||
+		{ echo "$unit (pid $main_pid) does not hold :$port (holder: ${holder:-none})" >&2; return 4; }
+
+	local have
+	have=$(curl -fsS "http://127.0.0.1:$port/health" | jq -r '.serverVersion // .version')
+	[[ "$have" == "$want" ]] || { echo "primary reports v$have, expected v$want" >&2; return 4; }
+
+	# Every omp session runs its own server from this dist, and omp starts a fresh one when it
+	# exits. Kill exact pids, never a pkill pattern: the pattern also matches the unit.
+	local restarted=0 proc pid cmd
+	for proc in /proc/[0-9]*; do
+		pid=${proc#/proc/}
+		[[ "$pid" == "$main_pid" ]] && continue
+		cmd=$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null) || continue
+		[[ "$cmd" == node\ *"$dist"* ]] || continue
+		started=$(started_at "$pid")
+		if [[ -n "$started" ]] && (( started < built_at )) && kill "$pid" 2>/dev/null; then
+			restarted=$((restarted + 1))
+		fi
+	done
+
+	mkdir -p "$state"
+	git rev-parse HEAD > "$state/installed-head"
+	if [[ -n "$adopt" ]]; then
+		# spark now holds the sync's commits; drop its worktree and branch so a stale
+		# spark-next can never be adopted later.
+		local wt
+		wt=$(git worktree list --porcelain | awk '/^worktree /{w=$2} /^branch refs\/heads\/spark-next$/{print w}')
+		[[ -n "$wt" ]] && git worktree remove --force "$wt"
+		git branch -D spark-next
+	fi
+	echo "installed $(git rev-parse --short HEAD) (v$want): $unit pid $main_pid holds :$port; restarted $restarted session server(s)"
+}
+
+main "$@"
+exit

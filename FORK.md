@@ -113,17 +113,64 @@ npm test -w packages/core          # the Wine host tests need Linux /proc and ba
 
 ## Rebase onto upstream
 
-```sh
-git fetch upstream
-git switch spark
-git rebase upstream/main           # keep the regression tests when you resolve conflicts
-# build and test as above
-git push --force-with-lease origin spark
-git push origin upstream/main:main
-```
+Follow "Nightly upstream sync" below by hand. Rebase and test in the sync worktree, never in the
+live checkout, then run `scripts/spark-install`.
 
-If the rebase changes the version or anything under `studio-plugin/`, rebuild the plugin.
-`spark-worktree-desktop` copies it into each prefix before Studio starts there.
+## Install
+
+`scripts/spark-install` puts the checkout into service. If a nightly sync left a `spark-next`
+branch, it first moves `spark` to it with `git reset --hard`. Then it builds the broker and
+plugin and restarts `spark-studio-mcp`. It checks that the unit holds :58741 and that `/health`
+reports the `package.json` version, then kills every omp session's server that started before
+the build. omp starts each one again from the new dist. It records the installed commit in
+`~/.local/state/robloxstudio-mcp/installed-head`.
+
+It refuses (exit 3) while a Studio is open or a `carbon serve` is running, because a running
+Studio keeps the plugin it loaded at startup. After a version change the new broker would
+reject that plugin with HTTP 426 until the Studio restarts. `--force` installs anyway;
+`--check-idle` only runs the check.
+
+## Nightly upstream sync
+
+Herb runs the schedule "robloxstudio-mcp upstream sync" at 04:00, gated by
+`scripts/spark-sync-gate`. The gate exits 1, so Herb sends nothing and starts no agent, unless:
+
+- `upstream/main` has commits that the newest fork branch lacks (`spark-next` if one exists,
+  else `spark`), or
+- that branch is ahead of `installed-head` and no Studio is open.
+
+The run follows these steps:
+
+1. If upstream moved, work in the sync worktree `~/.cache/robloxstudio-mcp-sync`:
+   1. When no `spark-next` branch exists, run
+      `git worktree add -B spark-next ~/.cache/robloxstudio-mcp-sync spark` and
+      `git config branch.spark-next.syncbase "$(git rev-parse spark)"` from the live checkout.
+      Otherwise reuse the worktree, and run `git rebase --abort` if a failed run left a rebase
+      there.
+   2. Run `git rebase upstream/main` in the worktree. Resolve each conflict so upstream's change
+      and the patch both survive, and keep the regression tests.
+   3. Run `git submodule update --init` and the commands under Build, including
+      `npm test -w packages/core`. Fix any failure the merge caused. If you can't, reset
+      `spark-next` to where this run started, stop and report.
+   4. Update this file's base reference and version note, and commit.
+   5. Push with
+      `git push --force-with-lease=spark:"$(git config branch.spark-next.syncbase)" origin spark-next:spark`
+      and `git push origin upstream/main:main`. The lease fails if origin's `spark` is not the
+      commit the sync started from; treat that like exit 5 below.
+2. Run `scripts/spark-install` in the live checkout. It adopts `spark-next` only if `spark`
+   still points at `syncbase`, then removes the worktree and the branch. Exit 5 means `spark`
+   gained commits since the sync started: remove the worktree and `spark-next`, then go back to
+   step 1. Exit 3 means a Studio is open: report that the install waits. The gate opens again
+   on the first night no Studio is open.
+3. Reply in two or three short lines: what upstream brought in, whether it is installed or
+   waiting, and any conflict that took judgment or anything that failed.
+
+The live checkout is never rebased or built until `spark-install` runs. Building it while
+Studios run changes `package.json` under the running broker. `spark-worktree-desktop`'s
+`heal_stale_mcp_primary` then restarts the primary at the next Studio launch, and every open
+Studio's older plugin gets HTTP 426 (this happened during the 2026-11-15 rebase).
+
+Keep `spark` pushed: the sync's push lease assumes origin's `spark` matches the local branch.
 
 ## Where Spark uses it
 
@@ -133,16 +180,11 @@ If the rebase changes the version or anything under `studio-plugin/`, rebuild th
 | omp MCP server `robloxstudio` (one per omp session; a proxy unless it holds :58741) | `~/.omp/agent/mcp.json`, chezmoi template `dot_omp/private_agent/mcp.json.tmpl` | `node <checkout>/packages/robloxstudio-mcp/dist/index.js` |
 | Plugin sync and stale-primary heal | `spark-worktree-desktop` (`MCP_PACKAGE_DIR`, default this checkout; repo `~/Projects/spark-worktree-desktop`, installed by copy to `~/.local/bin`; `spark-carbon-worktree` loads it) | copies `studio-plugin/MCPPlugin.rbxmx` into each prefix and compares the primary's `/health` version with the root `package.json` |
 
-Running processes keep the code they loaded. After a rebuild, restart the broker unit while no
-launch is in flight (`systemctl --user restart spark-studio-mcp`), then check that
-`ss -ltnp 'sport = :58741'` shows the pid from `systemctl --user show -p MainPID spark-studio-mcp`.
-If an omp session's server holds the port instead, the unit is a proxy and its journal
+Running processes keep the code they loaded; `scripts/spark-install` restarts all of them. If an
+omp session's server holds :58741 instead of the unit, the unit is a proxy and its journal
 (`journalctl --user -u spark-studio-mcp`) says `Could not claim port 58741`. That session runs a
 build older than patch 5, which cannot yield: kill that server process (the pid from `ss`); the
-unit promotes within 50 ms.
-omp sessions load the new build when they next start. Tool calls run in the calling session's own
-server, which forwards only Studio requests to the primary, so a session started before a rebuild
-keeps the old tool behaviour until it restarts.
+unit promotes within 50 ms. `spark-install` does this itself.
 
 Never stop these processes with `pkill -f` or `pgrep -f` patterns that contain the dist path
 (`packages/robloxstudio-mcp/dist/index.js`). The unit and every omp session's server match it. One
