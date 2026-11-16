@@ -127,8 +127,10 @@ the build. omp starts each one again from the new dist. It records the installed
 
 It refuses (exit 3) while a Studio is open or a `carbon serve` is running, because a running
 Studio keeps the plugin it loaded at startup. After a version change the new broker would
-reject that plugin with HTTP 426 until the Studio restarts. `--force` installs anyway;
-`--check-idle` only runs the check.
+reject that plugin with HTTP 426. `--force` installs anyway and copies the new plugin into each
+running Studio's prefix. Studio watches its Plugins folder and usually reloads it within
+seconds, but on 2026-11-15 one of two Studios didn't and needed a restart. `--check-idle` only
+runs the check.
 
 ## Nightly upstream sync
 
