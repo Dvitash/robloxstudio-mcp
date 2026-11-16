@@ -91,7 +91,15 @@ onto upstream `main` at `dd73269`). The broker reports it, and the plugin is bui
    `spark-worktree-desktop` maps a Studio pid to its `managed-instances/v1` record's
    `instanceId` and closes the Studio when the newest matching file (`<instanceId>` or
    `<instanceId>-*`) goes stale. `ROBLOXSTUDIO_MCP_ACTIVITY_DIR` overrides the directory; the
-   Jest setup points it at a temporary one. Tests: `studio-activity`.
+   Jest setup points it at a temporary one.
+   Read-only identity probes do not count, because tools send them to every connected Studio to
+   find their own: an `ensure_worktree_studio` in one worktree kept resetting another worktree's
+   idle Studio (dsv99 `test-like`) by reading its stamp. Exempt are `/api/place-info`
+   (`get_place_info`) and any operation whose `operation_id` starts with `ensure-identity-`
+   (`ensure_worktree_studio`'s per-candidate `execute_luau` stamp read in omp-workflow-tools
+   `studio_workflows/ensure.ts`; keep that prefix if it changes). `get_connected_instances`,
+   `manage_instance status` and `/health` are answered by the broker and never admitted. Other
+   `execute_luau` calls, edits, playtests and captures still count. Tests: `studio-activity`.
 
 ### Agent usage
 
