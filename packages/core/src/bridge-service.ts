@@ -502,6 +502,21 @@ const MAX_PENDING_REQUEST_BYTES = 64 * 1024 * 1024;
 const CANCELLATION_TOMBSTONE_TTL_MS = 60_000;
 const MAX_CANCELLATION_TOMBSTONES = 4096;
 const ACTIVITY_WRITE_INTERVAL_MS = 30_000;
+// Read-only identity probes that host tooling sends to every connected Studio to
+// find its own are not use of the probed Studio, so they never reset its idle
+// clock: get_place_info (/api/place-info), and ensure_worktree_studio's
+// (omp-workflow-tools) per-candidate stamp read, an execute_luau under
+// operation_id `ensure-identity-<uuid>`. Broker-local discovery
+// (get_connected_instances, manage_instance status, /health) is never admitted,
+// so it never counts either.
+const ACTIVITY_EXEMPT_ENDPOINTS: Record<string, true> = { '/api/place-info': true };
+const ACTIVITY_EXEMPT_OPERATION_PREFIXES = ['ensure-identity-'];
+
+function countsAsStudioActivity(endpoint: string, requestId: string): boolean {
+  return ACTIVITY_EXEMPT_ENDPOINTS[endpoint] !== true
+    && !ACTIVITY_EXEMPT_OPERATION_PREFIXES.some((prefix) => requestId.startsWith(prefix));
+}
+
 // Node socket backpressure does not represent Studio's MessageReceived capacity.
 // Keep each consumer's outstanding execution window small enough to avoid flooding it.
 const MAX_OUTSTANDING_REQUESTS_PER_TRANSPORT = 4;
@@ -1411,7 +1426,7 @@ export class BridgeService implements StudioTransportQueue {
     if (signal?.aborted) abortListener();
     const target = this.getPeerById(targetPeerId);
     if (this.pendingRequests.has(requestId) && target) this.notifyRequestAvailable(target.transportPeerId);
-    if (target) this.recordInstanceActivity(target.instanceId);
+    if (target && countsAsStudioActivity(endpoint, requestId)) this.recordInstanceActivity(target.instanceId);
     return { kind: 'pending', requestId, request };
   }
 
