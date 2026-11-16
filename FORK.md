@@ -17,8 +17,8 @@ It exists for two reasons:
 - `spark`: upstream `main` plus the patches below. Spark runs this branch.
 - `main`: a copy of upstream `main`. Fast-forward only; never commit to it.
 
-Keep the version that upstream sets (`package.json`, 3.3.0 at the time of writing). The broker reports
-it, and the plugin is built with it.
+Keep the version that upstream sets (`package.json`, 3.5.0 at the time of writing; `spark` is rebased
+onto upstream `main` at `dd73269`). The broker reports it, and the plugin is built with it.
 
 ## Patches
 
@@ -49,6 +49,11 @@ it, and the plugin is built with it.
    launch (e.g. one Carbon started while another broker was primary) is grabbed when Studio's own
    fast path is unavailable, before CaptureService; the window that shows the markers then names
    the process, so later captures go host-first.
+   This coexists with upstream's WSL host capture: `isHostCaptureSupported` is true on Linux, but
+   `isHostCapturePreferred` and the X11 grab apply only to native Linux, so WSL still routes to the
+   Windows PowerShell capture. Upstream's `capture_video` is unsupported on native Linux for now: it
+   reports that video recording needs Windows or WSL before any window grab or ffmpeg probe
+   (`action=storyboard` of an existing video still works with the Linux `ffmpeg`).
 3. `feat(core): screenshot sequences, wait_until, ready playtests and pending results`
    (`tools/index.ts`, `tools/definitions.ts`, `mcp-compat.ts`, `mcp-runtime.ts`):
    - `capture_screenshot` works in edit mode and in solo and multiplayer playtests. A multiplayer
@@ -63,8 +68,9 @@ it, and the plugin is built with it.
      `get_request_status` collects the result. omp's MCP client times out at 30 s by default, so
      the chezmoi `mcp.json` template sets `"timeout": 120000` for this server.
    Tests: `host-capture-linux`, `contact-sheet`, `runtime-wait` and the playtest cases in `smoke`.
-4. Merge of `feat/preview-ui` (and `ddb00f1`): `preview_ui`, which needs the `vendor/ui-renderer`
-   submodule (`git submodule update --init`) and pnpm for `build:plugin:artifact`.
+4. The `preview_ui` commits (formerly the `feat/preview-ui` merge plus `ddb00f1`): `preview_ui`,
+   which needs the `vendor/ui-renderer` submodule (`git submodule update --init`) and pnpm for
+   `build:plugin:artifact`.
 5. `feat(core): ROBLOX_STUDIO_CLAIM_PRIMARY takes the port from a session that holds it`
    (`server.ts`, `http-server.ts`). Every omp session runs this server, and the first to bind
    :58741 is primary. A session's 5 s promotion check often binds the port in the gap of a unit
