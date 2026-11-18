@@ -2,11 +2,12 @@
 
 This is Dvitash's fork of [chrrxs/robloxstudio-mcp](https://github.com/chrrxs/robloxstudio-mcp).
 It runs the Studio MCP broker on Spark (ARM64 Linux, Roblox Studio under Wine/Proton).
-Fixes stay in this fork; they are not sent upstream.
+Fixes that suit upstream go there as PRs; the rest stay here.
 
 It exists for two reasons:
 
-- Carbon's Studio launches failed on Wine. See the patch list below.
+- Spark-only behavior: `preview_ui`, the primary-port claim and the idle-reaper activity stamps
+  (patches below).
 - The broker and the Studio plugin must come from the same build. The plugin handshake rejects any
   version difference with HTTP 426. With `npx @chrrxs/robloxstudio-mcp@latest`, an upstream release
   could change the broker while the plugin in the Wine prefixes stayed old, or the reverse. Both now
@@ -18,60 +19,22 @@ It exists for two reasons:
 - `main`: a copy of upstream `main`. Fast-forward only; never commit to it.
 
 Keep the version that upstream sets (`package.json`, 3.5.0 at the time of writing; `spark` is rebased
-onto upstream `main` at `dd73269`). The broker reports it, and the plugin is built with it.
+onto upstream `main` at `4090862`). The broker reports it, and the plugin is built with it.
 
 ## Patches
 
-1. `fix: keep gated Wine launches running until Studio execs, and record authorization as an observation`
-   (`packages/core/src/studio-instance-manager.ts`).
-   A Wine launch is a stopped `/bin/sh` gate until `manage_instance authorize` resumes it and Wine
-   execs `RobloxStudioBeta.exe` in the same PID. Studio enumeration lists only `RobloxStudioBeta.exe`,
-   so the broker's 5 s coordinator saw each gated launch as missing:
-   - One refresh before authorization left the record `not_running`. Authorization verified the
-     exact process but did not update the observation, so it returned `process_running: false`.
-     Carbon then closed the launch and the broker SIGKILLed the Studio it had just started
-     ("robloxstudio-mcp did not authorize the exact Studio process").
-   - Two refreshes while Wine was still starting confirmed an exit and aborted the gate mid-start
-     ("Wine Studio process ... exited (signal SIGKILL) before RobloxStudioBeta.exe started").
+Former patches now in upstream `main` (PRs #174 to #180): the gated Wine launch fix, the X11
+window capture and contact sheets, `wait_until`, ready playtests, pending results and
+`capture_video` with x11grab. Upstream left out `capture_screenshot`'s `save_to`, so the fork no
+longer has it either. omp's MCP client times out at 30 s by default, and pending results arrive
+after the 25 s response budget, so the chezmoi `mcp.json` template sets `"timeout": 120000` for
+this server.
 
-   Now a pending launch whose gate this broker retains is observed as running; the gate is the
-   broker's own child, so its exit still closes the record. A successful authorization records a
-   running observation, so a snapshot taken while the launch was gated is too old to override it.
-   Regression tests: the three gated-launch tests in
-   `packages/core/src/__tests__/studio-wine-host.test.ts` ("Wine host managed Studio lifecycle").
-2. `feat(core): capture the Studio window on Linux and compose contact sheets`
-   (`host-capture-linux.ts`, `contact-sheet.ts`). Under Wine, Studio's own capture of the play
-   viewport fails or comes back black. On Linux the broker grabs the Studio X11 window with
-   python3 ctypes (libX11, libXcomposite; `xprop` from x11-utils), taking DISPLAY and XAUTHORITY
-   from the Studio process, and crops it to the viewport the plugin's markers outline.
-   `ROBLOX_STUDIO_HOST_CAPTURE=0` turns host capture off. Captures go to the host window first when
-   the broker knows the Studio's process (from its managed-instance registry). A Studio it did not
-   launch (e.g. one Carbon started while another broker was primary) is grabbed when Studio's own
-   fast path is unavailable, before CaptureService; the window that shows the markers then names
-   the process, so later captures go host-first.
-   This coexists with upstream's WSL host capture: `isHostCaptureSupported` is true on Linux, but
-   `isHostCapturePreferred` and the X11 grab apply only to native Linux, so WSL still routes to the
-   Windows PowerShell capture. Upstream's `capture_video` is unsupported on native Linux for now: it
-   reports that video recording needs Windows or WSL before any window grab or ffmpeg probe
-   (`action=storyboard` of an existing video still works with the Linux `ffmpeg`).
-3. `feat(core): screenshot sequences, wait_until, ready playtests and pending results`
-   (`tools/index.ts`, `tools/definitions.ts`, `mcp-compat.ts`, `mcp-runtime.ts`):
-   - `capture_screenshot` works in edit mode and in solo and multiplayer playtests. A multiplayer
-     `<id>-server` captures the server window. New arguments: `frames` (up to 16),
-     `interval_ms`, `grid` (one numbered contact sheet) and `save_to`.
-   - `eval_server_runtime` and `eval_client_runtime` take `wait_until` (plus `code`, `timeout_s`
-     and `poll_ms`). They poll the condition in the runtime VM and return `satisfied`.
-   - `solo_playtest start` defaults to play mode. Playtest starts return once every runtime peer
-     answers an eval (`ready_timeout_s`, default 90 s) and list `targets[].instance_id`.
-   - Calls longer than `ROBLOX_STUDIO_MCP_RESPONSE_BUDGET_MS` (default 25000) return
-     `state: "pending"` with a `requestId`. A repeated call joins the running one, and
-     `get_request_status` collects the result. omp's MCP client times out at 30 s by default, so
-     the chezmoi `mcp.json` template sets `"timeout": 120000` for this server.
-   Tests: `host-capture-linux`, `contact-sheet`, `runtime-wait` and the playtest cases in `smoke`.
-4. The `preview_ui` commits (formerly the `feat/preview-ui` merge plus `ddb00f1`): `preview_ui`,
+1. The `preview_ui` commits (formerly the `feat/preview-ui` merge plus `ddb00f1`): `preview_ui`,
    which needs the `vendor/ui-renderer` submodule (`git submodule update --init`) and pnpm for
-   `build:plugin:artifact`.
-5. `feat(core): ROBLOX_STUDIO_CLAIM_PRIMARY takes the port from a session that holds it`
+   `build:plugin:artifact`. It reads the viewport through `_captureViewportImageNow` inside the
+   viewport queue; keep that helper when upstream reshapes `_captureViewportImage`.
+2. `feat(core): ROBLOX_STUDIO_CLAIM_PRIMARY takes the port from a session that holds it`
    (`server.ts`, `http-server.ts`). Every omp session runs this server, and the first to bind
    :58741 is primary. A session's 5 s promotion check often binds the port in the gap of a unit
    restart, which left the unit a proxy and the session's old build serving Studio. A claiming
@@ -80,7 +43,7 @@ onto upstream `main` at `dd73269`). The broker reports it, and the plugin is bui
    never yields. A holder without the route (a build before this patch) keeps the port; the
    claimant logs `Could not claim port` and proxies, promoting when the port frees.
    Tests: `primary-claim`.
-6. `feat(core): record per-Studio MCP activity for the idle reaper`
+3. `feat(core): record per-Studio MCP activity for the idle reaper`
    (`bridge-service.ts`, `managed-instance-registry.ts`). When the primary admits a new operation
    for a peer (not a rejection or a replay of a retained or pending one), it touches
    `~/.local/state/robloxstudio-mcp/activity/<instanceId>` (the peer's `instanceId`, so a
@@ -104,7 +67,9 @@ onto upstream `main` at `dd73269`). The broker reports it, and the plugin is bui
 ### Agent usage
 
 - Take screenshots with `capture_screenshot`, not scrot, xwd or ffmpeg. Use `frames` with `grid: true`
-  for motion, and `save_to` for files. Read mouse coordinates only from single-frame captures.
+  for motion. Read mouse coordinates only from single-frame captures.
+- Record longer motion (cutscenes, animations) with `capture_video`. Keep other windows off the
+  Studio while it records: x11grab records whatever covers the window.
 - Wait for game state with `wait_until`, not sleeps.
 - Pass a `targets[].instance_id` from a playtest start as `instance_id`.
 - A `state: "pending"` result means "call `get_request_status`"; never repeat the call.
@@ -193,7 +158,7 @@ Keep `spark` pushed: the sync's push lease assumes origin's `spark` matches the 
 Running processes keep the code they loaded; `scripts/spark-install` restarts all of them. If an
 omp session's server holds :58741 instead of the unit, the unit is a proxy and its journal
 (`journalctl --user -u spark-studio-mcp`) says `Could not claim port 58741`. That session runs a
-build older than patch 5, which cannot yield: kill that server process (the pid from `ss`); the
+build older than patch 2, which cannot yield: kill that server process (the pid from `ss`); the
 unit promotes within 50 ms. `spark-install` does this itself.
 
 Never stop these processes with `pkill -f` or `pgrep -f` patterns that contain the dist path
