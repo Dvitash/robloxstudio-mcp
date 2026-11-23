@@ -16,7 +16,10 @@ const MAX_GRAB_BYTES = 256 * 1024 * 1024;
 // Studio opens small helper windows; the main window is far larger.
 const MIN_STUDIO_WINDOW_EDGE = 200;
 
-export type X11Session = { display: string; xauthority?: string };
+// pulseSource and pulseServer: where the Studio's sound goes. A Studio started
+// with PULSE_SINK plays into that PulseAudio/PipeWire sink, and the video
+// recorder records the sink's monitor source alongside the window.
+export type X11Session = { display: string; xauthority?: string; pulseSource?: string; pulseServer?: string };
 
 export type LinuxStudioWindow = {
   windowId: number;
@@ -36,16 +39,26 @@ export type LinuxHostCaptureDeps = {
   currentUid?: () => number | undefined;
 };
 
-// Only DISPLAY and XAUTHORITY are taken from the environment; nothing else in
-// it is kept or reported (it can hold credentials).
+// Only DISPLAY, XAUTHORITY, PULSE_SINK and PULSE_SERVER are taken from the
+// environment; nothing else in it is kept or reported (it can hold credentials).
 export function x11SessionFromEnviron(environ: Buffer): X11Session | undefined {
   let display: string | undefined;
   let xauthority: string | undefined;
+  let pulseSink: string | undefined;
+  let pulseServer: string | undefined;
   for (const entry of environ.toString('utf8').split('\0')) {
     if (entry.startsWith('DISPLAY=')) display = entry.slice('DISPLAY='.length);
     else if (entry.startsWith('XAUTHORITY=')) xauthority = entry.slice('XAUTHORITY='.length);
+    else if (entry.startsWith('PULSE_SINK=')) pulseSink = entry.slice('PULSE_SINK='.length);
+    else if (entry.startsWith('PULSE_SERVER=')) pulseServer = entry.slice('PULSE_SERVER='.length);
   }
-  return display ? { display, ...(xauthority ? { xauthority } : {}) } : undefined;
+  if (!display) return undefined;
+  return {
+    display,
+    ...(xauthority ? { xauthority } : {}),
+    ...(pulseSink ? { pulseSource: `${pulseSink}.monitor` } : {}),
+    ...(pulseSink && pulseServer ? { pulseServer } : {}),
+  };
 }
 
 export const LINUX_NO_STUDIO_DISPLAY_ERROR =

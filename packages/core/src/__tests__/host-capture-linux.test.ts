@@ -74,11 +74,16 @@ const studio = (environ: string): FakeProcess => ({ cmdline: 'C:\\Program Files\
 const SECRET = 'ROBLOSECURITY=do-not-leak';
 
 describe('Linux X11 session and xprop parsing', () => {
-  test('keeps only DISPLAY and XAUTHORITY from a process environment', () => {
+  test('keeps only DISPLAY, XAUTHORITY and the sound sink from a process environment', () => {
     const session = x11SessionFromEnviron(Buffer.from(`HOME=/home/a\0DISPLAY=:124\0${SECRET}\0XAUTHORITY=/tmp/xauth\0`));
     expect(session).toEqual({ display: ':124', xauthority: '/tmp/xauth' });
     expect(x11SessionFromEnviron(Buffer.from('DISPLAY=:7\0'))).toEqual({ display: ':7' });
     expect(x11SessionFromEnviron(Buffer.from(`XAUTHORITY=/tmp/x\0${SECRET}\0`))).toBeUndefined();
+    // Spark gives each Studio display its own sink; the recorder reads its monitor.
+    expect(x11SessionFromEnviron(Buffer.from(
+      `DISPLAY=:158\0PULSE_SERVER=unix:/run/user/1000/pulse/native\0${SECRET}\0PULSE_SINK=spark_158\0`,
+    ))).toEqual({ display: ':158', pulseSource: 'spark_158.monitor', pulseServer: 'unix:/run/user/1000/pulse/native' });
+    expect(x11SessionFromEnviron(Buffer.from('DISPLAY=:7\0PULSE_SERVER=unix:/run/pulse\0'))).toEqual({ display: ':7' });
   });
 
   test('parses the client list and window properties', () => {

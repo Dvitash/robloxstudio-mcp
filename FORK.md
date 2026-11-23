@@ -63,6 +63,16 @@ this server.
    `studio_workflows/ensure.ts`; keep that prefix if it changes). `get_connected_instances`,
    `manage_instance status` and `/health` are answered by the broker and never admitted. Other
    `execute_luau` calls, edits, playtests and captures still count. Tests: `studio-activity`.
+4. `feat(core): capture_video records the Studio's sound on Linux`
+   (`host-capture-linux.ts`, `video-recorder.ts`, `tools/index.ts`). Spark starts each Studio with
+   `PULSE_SINK=spark_<display>` (and `PULSE_SERVER`), so its sound plays into that display's own
+   PipeWire sink. The X11 session read from the Studio's `/proc/<pid>/environ` carries the sink's
+   monitor as `pulseSource`, and the x11grab recording adds it as a `-f pulse` input, encoded as
+   AAC 160k (`aresample=async=1` keeps it on the picture's clock). The result names it in
+   `video.audio`. If ffmpeg fails at once with the sound input, the recording starts again
+   without it and the result carries `audio_warning`; a Studio without `PULSE_SINK` records
+   silently as before, and Windows/WSL sources are unchanged. Upstream candidate, but only Spark
+   sets a per-Studio sink. Tests: `video-recorder`, `host-capture-linux`.
 
 ### Agent usage
 

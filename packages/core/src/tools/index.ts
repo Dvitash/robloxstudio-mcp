@@ -57,6 +57,7 @@ import {
   defaultVideoPath,
   ffmpegCommand,
   pruneDefaultVideos,
+  recordingAudioSource,
   videoRecordingUnsupportedReason,
 } from '../video-recorder.js';
 import type { CaptureSource, MediaInfo, VideoRecorderBackend, VideoRecordingExit, VideoRecordingProcess } from '../video-recorder.js';
@@ -207,7 +208,16 @@ type ActiveVideoRecording = {
   startedAt: number;
   process: VideoRecordingProcess;
   exit?: VideoRecordingExit;
+  // The sound source recorded with the picture (Linux: the Studio's sink monitor).
+  audio?: string;
+  // Why the Studio had a sound source but the video has no sound.
+  audioWarning?: string;
 };
+
+// video.audio names the sound source the video carries; a silent video has none.
+function videoAudio(recording: ActiveVideoRecording): { audio?: string } {
+  return recording.audio ? { audio: recording.audio } : {};
+}
 
 type VideoViewportLocation =
   | {
@@ -7562,7 +7572,8 @@ export class RobloxStudioTools {
         action,
         recording: true,
         target: recording.targetRole,
-        video: { path: recording.outputPath, fps, width, height, encoder: recording.encoder, source: recording.source },
+        video: { path: recording.outputPath, fps, width, height, encoder: recording.encoder, source: recording.source, ...videoAudio(recording) },
+        ...(recording.audioWarning ? { audio_warning: recording.audioWarning } : {}),
         max_duration_ms: maxDurationMs,
         message:
           'Recording the Studio viewport. Trigger the scene now (for example with execute_luau, eval_client_runtime, ' +
@@ -7625,12 +7636,12 @@ export class RobloxStudioTools {
       );
       if (!located.success) return { ok: false, error: `Could not locate the Studio viewport: ${located.error}` };
 
-      const encoderProcess = this.videoRecorder.start({
+      const startEncoder = (x11Session: HostWindowIdentity['x11Session']) => this.videoRecorder.start({
         ffmpegPath: probe.ffmpegPath,
         encoder: probe.encoder,
         source: located.source,
         windowId: located.windowId,
-        x11Session: located.x11Session,
+        x11Session,
         crop: located.rect,
         frameWidth: located.frameWidth,
         frameHeight: located.frameHeight,
@@ -7638,6 +7649,29 @@ export class RobloxStudioTools {
         maxDurationMs: options.maxDurationMs,
         outputPath,
       });
+      const audioSource = recordingAudioSource({ source: located.source, x11Session: located.x11Session });
+      let audioWarning: string | undefined;
+      let startedAt = Date.now();
+      let encoderProcess = startEncoder(located.x11Session);
+      // A rejected window handle, encoder or sound source fails within moments;
+      // report it now rather than after the agent has played the whole scene.
+      let early = await settledWithin(encoderProcess.done, this.videoStartGraceMs);
+      if (early !== undefined && audioSource !== undefined && located.x11Session) {
+        // The picture matters more than the sound: record it without the sound
+        // rather than fail (for example when the Studio's sink is gone).
+        audioWarning = `Recorded without Studio audio: ffmpeg could not record ${audioSource} ` +
+          `(${early.ok ? 'it stopped right after starting' : early.error}).`;
+        const { display, xauthority } = located.x11Session;
+        startedAt = Date.now();
+        encoderProcess = startEncoder({ display, ...(xauthority ? { xauthority } : {}) });
+        early = await settledWithin(encoderProcess.done, this.videoStartGraceMs);
+      }
+      if (early !== undefined) {
+        return {
+          ok: false,
+          error: early.ok ? 'ffmpeg stopped right after starting; nothing was recorded' : `Could not record the Studio window: ${early.error}`,
+        };
+      }
       const recording: ActiveVideoRecording = {
         instanceId,
         targetRole,
@@ -7648,21 +7682,12 @@ export class RobloxStudioTools {
         fps: options.fps,
         maxDurationMs: options.maxDurationMs,
         storyboardFrames: options.storyboardFrames,
-        startedAt: Date.now(),
+        startedAt,
         process: encoderProcess,
+        ...(audioWarning === undefined ? (audioSource ? { audio: audioSource } : {}) : { audioWarning }),
       };
       void encoderProcess.done.then((exit) => { recording.exit = exit; });
       this.videoRecordings.set(instanceId, recording);
-      // A rejected window handle or encoder fails within moments; report it now
-      // rather than after the agent has played the whole scene.
-      const early = await settledWithin(encoderProcess.done, this.videoStartGraceMs);
-      if (early !== undefined) {
-        if (this.videoRecordings.get(instanceId) === recording) this.videoRecordings.delete(instanceId);
-        return {
-          ok: false,
-          error: early.ok ? 'ffmpeg stopped right after starting; nothing was recorded' : `Could not record the Studio window: ${early.error}`,
-        };
-      }
       return { ok: true, recording, width: located.rect.width - (located.rect.width % 2), height: located.rect.height - (located.rect.height % 2) };
     } finally {
       this.videoStarting.delete(instanceId);
@@ -7805,9 +7830,10 @@ export class RobloxStudioTools {
 
   private async _finishVideo(action: VideoAction, recording: ActiveVideoRecording, exit: VideoRecordingExit, frames: number) {
     const video: Record<string, unknown> = {
-      path: recording.outputPath, fps: recording.fps, encoder: recording.encoder, source: recording.source,
+      path: recording.outputPath, fps: recording.fps, encoder: recording.encoder, source: recording.source, ...videoAudio(recording),
     };
     const body: Record<string, unknown> = { action, target: recording.targetRole, video };
+    if (recording.audioWarning) body.audio_warning = recording.audioWarning;
     if (!exit.ok) return this._textResult({ ...body, error: `The recording failed: ${exit.error}` });
     let info: MediaInfo;
     try {

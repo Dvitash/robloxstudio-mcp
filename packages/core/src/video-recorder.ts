@@ -25,7 +25,10 @@
 // x11grab device reads the Studio's X11 window there, with the DISPLAY and
 // XAUTHORITY the Linux host capture found in the Studio process. x11grab copies
 // the window's area of the screen, so windows covering Studio show up in the
-// recording (the still captures read the composited window instead).
+// recording (the still captures read the composited window instead). When the
+// Studio process names a PULSE_SINK (Spark gives each display its own), the
+// recording also takes that sink's monitor through FFmpeg's pulse input, so the
+// video carries the game's sound; without one the video is silent as before.
 import { execFileSync, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -53,7 +56,8 @@ export type StartVideoOptions = {
   encoder: VideoEncoder;
   source: CaptureSource;
   windowId: number;
-  // x11grab only: the X display (and its cookie) that shows the window.
+  // x11grab only: the X display (and its cookie) that shows the window, and the
+  // Studio's sound sink monitor when it has one.
   x11Session?: X11Session;
   // Viewport rect inside the captured window frame, and that frame's size.
   crop: ViewportRect;
@@ -130,11 +134,13 @@ export function videoRecordingUnsupportedReason(platform: NodeJS.Platform = proc
 
 // ffmpeg reads the window on the Studio's X display, with that display's cookie.
 // An inherited XAUTHORITY belongs to another display, so it is dropped when the
-// Studio has none.
+// Studio has none. The Studio's PULSE_SERVER, when it names one, is where its
+// sound sink lives.
 export function x11grabEnv(session: X11Session, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base, DISPLAY: session.display };
   if (session.xauthority) env.XAUTHORITY = session.xauthority;
   else delete env.XAUTHORITY;
+  if (session.pulseServer) env.PULSE_SERVER = session.pulseServer;
   return env;
 }
 
@@ -336,12 +342,28 @@ function sourceGraph(
   return ['-filter_complex', `${options.join(':')},hwdownload,format=bgra${convert}[v]`];
 }
 
+// x11grab only: the monitor of the sink the Studio plays its sound into.
+export function recordingAudioSource(options: Pick<StartVideoOptions, 'source' | 'x11Session'>): string | undefined {
+  return options.source === 'x11grab' ? options.x11Session?.pulseSource : undefined;
+}
+
 export function recordingArgs(options: StartVideoOptions): string[] {
   const crop = gfxcaptureCrop(options.crop, options.frameWidth, options.frameHeight);
+  const audioSource = recordingAudioSource(options);
+  // Both inputs open at once and ffmpeg starts each at zero; aresample fills
+  // gaps and trims overlaps so the sound stays on the picture's clock.
+  const audio = audioSource
+    ? {
+      input: ['-thread_queue_size', '1024', '-f', 'pulse', '-ac', '2', '-ar', '48000', '-i', audioSource],
+      output: ['-map', '1:a', '-af', 'aresample=async=1', '-c:a', 'aac', '-b:a', '160k'],
+    }
+    : { input: [], output: [] };
   return [
     '-hide_banner', '-nostats', '-loglevel', 'error', '-y',
     ...sourceGraph(options.source, options.windowId, options.fps, 'bgra', crop, options.x11Session),
+    ...audio.input,
     '-map', '[v]',
+    ...audio.output,
     '-t', (options.maxDurationMs / 1000).toFixed(3),
     // WGC delivers a frame only when the window changes; constant frame rate
     // repeats the last one so playback timing matches wall time.

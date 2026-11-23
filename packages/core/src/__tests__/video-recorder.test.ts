@@ -158,10 +158,34 @@ describe('video recorder helpers', () => {
     expect(() => grabFrameArgs('x11grab', 77)).toThrow(/X display/);
   });
 
+  test('x11grab records the Studio sound sink monitor with the window when the Studio has one', () => {
+    const x11Session = { display: ':158', pulseSource: 'spark_158.monitor', pulseServer: 'unix:/run/user/1000/pulse/native' };
+    const options: StartVideoOptions = {
+      ffmpegPath: 'ffmpeg', encoder: 'libx264', source: 'x11grab', windowId: 77, x11Session,
+      crop: { x: 10, y: 20, width: 301, height: 200 }, frameWidth: 400, frameHeight: 260,
+      fps: 30, maxDurationMs: 5_000, outputPath: 'out.mp4',
+    };
+    expect(recordingArgs(options).slice(0, recordingArgs(options).indexOf('-t'))).toEqual([
+      '-hide_banner', '-nostats', '-loglevel', 'error', '-y',
+      '-f', 'x11grab', '-window_id', '77', '-draw_mouse', '0', '-framerate', '30', '-i', ':158',
+      '-filter_complex', '[0:v]crop=300:200:10:20,format=bgra[v]',
+      '-thread_queue_size', '1024', '-f', 'pulse', '-ac', '2', '-ar', '48000', '-i', 'spark_158.monitor',
+      '-map', '[v]',
+      '-map', '1:a', '-af', 'aresample=async=1', '-c:a', 'aac', '-b:a', '160k',
+    ]);
+    // Without a sink, and on the Windows sources, the recording stays video-only.
+    const silent = recordingArgs({ ...options, x11Session: { display: ':158' } });
+    expect(silent).not.toContain('pulse');
+    expect(silent.filter((arg) => arg === '-map')).toHaveLength(1);
+    expect(recordingArgs({ ...options, source: 'gdigrab' })).not.toContain('pulse');
+  });
+
   test('runs x11grab with the Studio display and cookie, never an inherited cookie', () => {
     const base = { PATH: '/usr/bin', DISPLAY: ':0', XAUTHORITY: '/home/u/.Xauthority' };
     expect(x11grabEnv({ display: ':118', xauthority: '/tmp/xauth_118' }, base)).toEqual({ PATH: '/usr/bin', DISPLAY: ':118', XAUTHORITY: '/tmp/xauth_118' });
     expect(x11grabEnv({ display: ':119' }, base)).toEqual({ PATH: '/usr/bin', DISPLAY: ':119' });
+    expect(x11grabEnv({ display: ':158', pulseSource: 'spark_158.monitor', pulseServer: 'unix:/run/pulse' }, base))
+      .toEqual({ PATH: '/usr/bin', DISPLAY: ':158', PULSE_SERVER: 'unix:/run/pulse' });
     expect(base.DISPLAY).toBe(':0');
   });
 
@@ -387,6 +411,8 @@ class FakeBackend implements VideoRecorderBackend {
   grabbedSessions: Array<X11Session | undefined> = [];
   info: MediaInfo = { durationSeconds: 3, width: 300, height: 120 };
   failOnStart?: VideoRecordingExit;
+  // Exits for the next starts, in order, before failOnStart applies.
+  startExits: VideoRecordingExit[] = [];
 
   async probe() { return this.probeResult; }
 
@@ -401,7 +427,8 @@ class FakeBackend implements VideoRecorderBackend {
   start(options: StartVideoOptions) {
     this.started.push(options);
     const recording = new FakeRecording();
-    if (this.failOnStart) recording.settle(this.failOnStart);
+    const exit = this.startExits.shift() ?? this.failOnStart;
+    if (exit) recording.settle(exit);
     this.recordings.push(recording);
     return recording;
   }
@@ -628,6 +655,57 @@ describe('capture_video tool', () => {
     expect(backend.started[0]).toMatchObject({
       source: 'x11grab', windowId: 0x1200007, x11Session, crop: { x: 50, y: 30, width: 300, height: 120 }, frameWidth: 400, frameHeight: 200,
     });
+  });
+
+  test('on native Linux records the Studio sound sink with the window and names it', async () => {
+    nativeLinux();
+    const x11Session = { display: ':158', pulseSource: 'spark_158.monitor', pulseServer: 'unix:/run/user/1000/pulse/native' };
+    const { tools, backend } = makeTools({
+      identity: { windowId: 0x1200007, processId: 4242, bundleIdentifier: 'x11:158', x11Session },
+    });
+    backend.probeResult = { ok: true, ffmpegPath: 'ffmpeg', encoder: 'libx264', sources: ['x11grab'] };
+    const started = textOf(await tools.captureVideo({ action: 'start', output_path: path.join(outputDirectory, 'a.mp4') }));
+    expect(started).toMatchObject({ recording: true, video: { source: 'x11grab', audio: 'spark_158.monitor' } });
+    expect(started.audio_warning).toBeUndefined();
+    expect(backend.started).toHaveLength(1);
+    expect(backend.started[0].x11Session).toEqual(x11Session);
+    const stopped = textOf(await tools.captureVideo({ action: 'stop', frames: 0 }));
+    expect(stopped).toMatchObject({ video: { audio: 'spark_158.monitor' } });
+  });
+
+  test('on native Linux records the window alone when the sound source fails to open', async () => {
+    nativeLinux();
+    const x11Session = { display: ':158', xauthority: '/tmp/xauth_158', pulseSource: 'spark_158.monitor', pulseServer: 'unix:/run/pulse' };
+    const { tools, backend } = makeTools({
+      identity: { windowId: 0x1200007, processId: 4242, bundleIdentifier: 'x11:158', x11Session },
+    });
+    backend.probeResult = { ok: true, ffmpegPath: 'ffmpeg', encoder: 'libx264', sources: ['x11grab'] };
+    backend.startExits = [{ ok: false, error: 'ffmpeg exited with code 253: Error opening input file spark_158.monitor.' }];
+    const started = textOf(await tools.captureVideo({ action: 'start', output_path: path.join(outputDirectory, 'a.mp4') }));
+    expect(started).toMatchObject({ recording: true, video: { source: 'x11grab' } });
+    expect(started.video.audio).toBeUndefined();
+    expect(started.audio_warning).toBe(
+      'Recorded without Studio audio: ffmpeg could not record spark_158.monitor ' +
+      '(ffmpeg exited with code 253: Error opening input file spark_158.monitor.).',
+    );
+    expect(backend.started.map((options) => options.x11Session)).toEqual([x11Session, { display: ':158', xauthority: '/tmp/xauth_158' }]);
+    const stopped = textOf(await tools.captureVideo({ action: 'stop', frames: 0 }));
+    expect(stopped.audio_warning).toBe(started.audio_warning);
+    expect(stopped.error).toBeUndefined();
+  });
+
+  test('on native Linux reports the video failure when the window fails without the sound too', async () => {
+    nativeLinux();
+    const x11Session = { display: ':158', pulseSource: 'spark_158.monitor' };
+    const { tools, backend } = makeTools({
+      identity: { windowId: 0x1200007, processId: 4242, bundleIdentifier: 'x11:158', x11Session },
+    });
+    backend.probeResult = { ok: true, ffmpegPath: 'ffmpeg', encoder: 'libx264', sources: ['x11grab'] };
+    backend.failOnStart = { ok: false, error: 'window not found' };
+    const result = textOf(await tools.captureVideo({ action: 'start', output_path: path.join(outputDirectory, 'a.mp4') }));
+    expect(result.error).toBe('Could not record the Studio window: window not found');
+    expect(backend.started).toHaveLength(2);
+    await expect(tools.captureVideo({ action: 'stop' })).rejects.toThrow(/No capture_video recording is active/);
   });
 
   test('on native Linux records the Studio window that shows the markers', async () => {
