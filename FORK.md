@@ -18,15 +18,16 @@ It exists for two reasons:
 - `spark`: upstream `main` plus the patches below. Spark runs this branch.
 - `main`: a copy of upstream `main`. Fast-forward only; never commit to it.
 
-Keep the version that upstream sets (`package.json`, 3.5.0 at the time of writing; `spark` is rebased
-onto upstream `main` at `4090862`). The broker reports it, and the plugin is built with it.
+Keep the version that upstream sets (`package.json`, 3.6.0 at the time of writing; `spark` is rebased
+onto upstream `main` at `6a16374`). The broker reports it, and the plugin is built with it.
 
 ## Patches
 
 Former patches now in upstream `main` (PRs #174 to #180): the gated Wine launch fix, the X11
 window capture and contact sheets, `wait_until`, ready playtests, pending results and
-`capture_video` with x11grab. Upstream left out `capture_screenshot`'s `save_to`, so the fork no
-longer has it either. omp's MCP client times out at 30 s by default, and pending results arrive
+`capture_video` with x11grab. Upstream #190 detaches budgeted playtest starts from the closed
+request's signal, which replaced the fork's own fix. Upstream left out `capture_screenshot`'s
+`save_to`, so the fork no longer has it either. omp's MCP client times out at 30 s by default, and pending results arrive
 after the 25 s response budget, so the chezmoi `mcp.json` template sets `"timeout": 120000` for
 this server.
 
@@ -93,6 +94,9 @@ npm --prefix studio-plugin ci
 npm run build:plugin:artifact      # plugin: studio-plugin/MCPPlugin.rbxmx (gitignored)
 npm test -w packages/core          # the Wine host tests need Linux /proc and bash
 ```
+
+On Spark, `screenshot-sequences.test.ts` "frames are spaced by interval_ms" fails because the
+real X11 host capture runs under fake timers; it passes with `ROBLOX_STUDIO_HOST_CAPTURE=0`.
 
 ## Rebase onto upstream
 
